@@ -1,6 +1,6 @@
 // The `chat` Edge Function: the whole conversational loop.
 //
-// 1. Persist the user's message.
+// 1. Persist the user's message (idempotently — see below).
 // 2. Embed it and pull relevant context via pgvector (RAG).
 // 3. Call Claude with extended thinking + the web search tool.
 // 4. Persist the agent's reply, with thinking stored separately.
@@ -8,6 +8,13 @@
 //
 // Holds ANTHROPIC_API_KEY and the Supabase service-role key — this is why
 // the heavy lifting happens here rather than in the Flutter client.
+//
+// Idempotent retries: the client generates the message id itself
+// (`client_message_id`) and resends the *same* id if a send fails or times
+// out client-side. That lets us tell "never reached the server" apart from
+// "reached the server but the response got lost" and resume correctly
+// instead of ever creating a duplicate user message or double-calling
+// Claude for the same turn.
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { corsHeaders, handleOptions, jsonResponse } from "../_shared/cors.ts";
@@ -28,7 +35,7 @@ Deno.serve(async (req) => {
   if (preflight) return preflight;
 
   try {
-    const { conversation_id, content } = await req.json();
+    const { conversation_id, content, client_message_id } = await req.json();
 
     if (!conversation_id || typeof content !== "string" || !content.trim()) {
       return jsonResponse({ error: "conversation_id and non-empty content are required" }, 400);
@@ -46,30 +53,67 @@ Deno.serve(async (req) => {
       .maybeSingle();
     const engineerId = engineer?.id ?? null;
 
-    // 1. Persist the user's message.
-    const { data: userMessage, error: userInsertError } = await supabase
-      .from("messages")
-      .insert({
+    // 1. Persist the user's message — idempotently if a client_message_id
+    // was supplied (a retry of an earlier attempt).
+    let userMessage;
+    if (client_message_id) {
+      const { data: existing } = await supabase
+        .from("messages")
+        .select()
+        .eq("id", client_message_id)
+        .eq("conversation_id", conversation_id)
+        .maybeSingle();
+
+      if (existing) {
+        // Already reached the server before. Did it also already get a
+        // reply? If so, this is a pure retry of a successful turn whose
+        // response never made it back to the client — return the same
+        // reply rather than calling Claude again.
+        const { data: existingReply } = await supabase
+          .from("messages")
+          .select()
+          .eq("replies_to_message_id", existing.id)
+          .maybeSingle();
+
+        if (existingReply) {
+          return jsonResponse({ message: existingReply });
+        }
+        // User message landed but the reply never got generated — resume
+        // from here instead of re-inserting.
+        userMessage = existing;
+      }
+    }
+
+    if (!userMessage) {
+      const insertPayload: Record<string, unknown> = {
         conversation_id,
         role: "user",
         content,
         author_id: engineerId,
-      })
-      .select()
-      .single();
-    if (userInsertError) throw userInsertError;
+      };
+      if (client_message_id) insertPayload.id = client_message_id;
 
-    // 2. Embed it; retrieve relevant context.
+      const { data: inserted, error: userInsertError } = await supabase
+        .from("messages")
+        .insert(insertPayload)
+        .select()
+        .single();
+      if (userInsertError) throw userInsertError;
+      userMessage = inserted;
+    }
+
+    // 2. Embed it; retrieve relevant context. Upsert since a resumed retry
+    // may have already embedded this message in a prior attempt.
     let ragContext = "";
     try {
       const queryEmbedding = await embed(content);
 
-      await supabase.from("embeddings").insert({
+      await supabase.from("embeddings").upsert({
         source_type: "message",
         source_id: userMessage.id,
         content_preview: content.slice(0, 2000),
         embedding: toPgVector(queryEmbedding),
-      });
+      }, { onConflict: "source_type,source_id" });
 
       const { data: matches } = await supabase.rpc("match_embeddings", {
         query_embedding: toPgVector(queryEmbedding),
@@ -124,6 +168,7 @@ Deno.serve(async (req) => {
         role: "agent",
         content: finalText,
         thinking_content: result.thinkingText || null,
+        replies_to_message_id: userMessage.id,
         metadata: {
           web_search_used: result.webSearchUsed,
           citations: result.citations,
@@ -136,12 +181,12 @@ Deno.serve(async (req) => {
     // Embed the agent's reply too, so future turns can retrieve it.
     embed(finalText)
       .then((vec) =>
-        supabase.from("embeddings").insert({
+        supabase.from("embeddings").upsert({
           source_type: "message",
           source_id: agentMessage.id,
           content_preview: finalText.slice(0, 2000),
           embedding: toPgVector(vec),
-        })
+        }, { onConflict: "source_type,source_id" })
       )
       .catch((e) => console.error("Failed to embed agent reply:", e));
 
@@ -167,12 +212,12 @@ Deno.serve(async (req) => {
 
           try {
             const vec = await embed(fact.content);
-            await supabase.from("embeddings").insert({
+            await supabase.from("embeddings").upsert({
               source_type: "extracted_knowledge",
               source_id: knowledgeRow.id,
               content_preview: fact.content.slice(0, 2000),
               embedding: toPgVector(vec),
-            });
+            }, { onConflict: "source_type,source_id" });
           } catch (e) {
             console.error("Failed to embed extracted fact:", e);
           }

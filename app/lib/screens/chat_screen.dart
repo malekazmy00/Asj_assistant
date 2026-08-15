@@ -6,9 +6,14 @@ import 'package:flutter/material.dart';
 import '../models/conversation.dart';
 import '../models/file_record.dart';
 import '../models/message.dart';
+import '../models/pending_message.dart';
+import '../services/outbox_service.dart';
+import '../services/session_service.dart';
 import '../services/supabase_service.dart';
+import '../theme/app_theme.dart';
 import '../widgets/chat_composer.dart';
 import '../widgets/message_bubble.dart';
+import 'conversation_history_screen.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -17,40 +22,80 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
+/// A single row to render: either a confirmed message from the server or a
+/// still-local pending one. Deduplicated by id — see _mergedRows.
+class _ChatRow {
+  final ChatMessage? confirmed;
+  final PendingMessage? pending;
+  _ChatRow.confirmed(ChatMessage m)
+      : confirmed = m,
+        pending = null;
+  _ChatRow.pending(PendingMessage m)
+      : confirmed = null,
+        pending = m;
+
+  DateTime get createdAt => confirmed?.createdAt ?? pending!.createdAt;
+}
+
 class _ChatScreenState extends State<ChatScreen> {
   final _service = SupabaseService.instance;
+  final _outbox = OutboxService.instance;
   final _scrollController = ScrollController();
 
   Conversation? _conversation;
   StreamSubscription<List<ChatMessage>>? _sub;
   List<ChatMessage> _messages = [];
   bool _loading = true;
-  bool _sending = false;
   String? _error;
 
   @override
   void initState() {
     super.initState();
+    _outbox.addListener(_onOutboxChanged);
     _init();
   }
 
   Future<void> _init() async {
     try {
-      final conversation = await _service.getOrCreateActiveConversation();
-      setState(() {
-        _conversation = conversation;
-        _loading = false;
-      });
-      _sub = _service.watchMessages(conversation.id).listen((messages) {
-        setState(() => _messages = messages);
-        _scrollToBottom();
-      });
+      final conversation = await _resolveStartupConversation();
+      await _switchTo(conversation, persist: false);
+      setState(() => _loading = false);
     } catch (e) {
       setState(() {
         _error = 'Could not connect: $e';
         _loading = false;
       });
     }
+  }
+
+  Future<Conversation> _resolveStartupConversation() async {
+    final savedId = await SessionService.instance.getCurrentConversationId();
+    if (savedId != null) {
+      final existing = await _service.getConversation(savedId);
+      if (existing != null) return existing;
+    }
+    return _service.getOrCreateActiveConversation();
+  }
+
+  Future<void> _switchTo(Conversation conversation, {bool persist = true}) async {
+    await _sub?.cancel();
+    setState(() {
+      _conversation = conversation;
+      _messages = [];
+    });
+    if (persist) {
+      await SessionService.instance.setCurrentConversationId(conversation.id);
+    }
+    _sub = _service.watchMessages(conversation.id).listen((messages) {
+      _outbox.reconcile(messages.map((m) => m.id));
+      setState(() => _messages = messages);
+      _scrollToBottom();
+    });
+  }
+
+  void _onOutboxChanged() {
+    if (!mounted) return;
+    setState(() {});
   }
 
   void _scrollToBottom() {
@@ -64,17 +109,43 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  Future<void> _handleSend(String text) async {
+  List<_ChatRow> get _mergedRows {
+    final confirmedIds = _messages.map((m) => m.id).toSet();
+    final rows = [
+      ..._messages.map(_ChatRow.confirmed),
+      ..._outbox
+          .forConversation(_conversation?.id ?? '')
+          .where((p) => !confirmedIds.contains(p.localId))
+          .map(_ChatRow.pending),
+    ];
+    rows.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    return rows;
+  }
+
+  void _handleSend(String text) {
     final conversation = _conversation;
     if (conversation == null) return;
-    setState(() => _sending = true);
-    try {
-      await _service.sendMessage(conversationId: conversation.id, content: text);
-    } catch (e) {
-      _showError('Message failed to send: $e');
-    } finally {
-      if (mounted) setState(() => _sending = false);
+    _outbox.send(conversation.id, text);
+    _scrollToBottom();
+  }
+
+  Future<void> _handleNewChat() async {
+    final conversation = await _service.createConversation();
+    await _switchTo(conversation);
+  }
+
+  Future<void> _handleOpenHistory() async {
+    final result = await Navigator.of(context).push<String>(
+      MaterialPageRoute(builder: (_) => const ConversationHistoryScreen()),
+    );
+    if (result == null) return;
+    if (result == '__new__') {
+      await _handleNewChat();
+      return;
     }
+    if (result == _conversation?.id) return;
+    final selected = await _service.getConversation(result);
+    if (selected != null) await _switchTo(selected);
   }
 
   Future<void> _handleAttach(PlatformFile file) async {
@@ -139,6 +210,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    _outbox.removeListener(_onOutboxChanged);
     _sub?.cancel();
     _scrollController.dispose();
     super.dispose();
@@ -147,16 +219,26 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Medical Engineer Assistant')),
+      appBar: AppBar(
+        title: const Text('Medical Engineer Assistant'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.history, color: AppColors.facebookBlue),
+            tooltip: 'Past chats',
+            onPressed: _handleOpenHistory,
+          ),
+          IconButton(
+            icon: const Icon(Icons.add_comment_outlined, color: AppColors.facebookBlue),
+            tooltip: 'New chat',
+            onPressed: _handleNewChat,
+          ),
+        ],
+      ),
       body: SafeArea(
         child: Column(
           children: [
             Expanded(child: _buildBody()),
-            ChatComposer(
-              sending: _sending,
-              onSend: _handleSend,
-              onAttach: _handleAttach,
-            ),
+            ChatComposer(onSend: _handleSend, onAttach: _handleAttach),
           ],
         ),
       ),
@@ -175,7 +257,8 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
       );
     }
-    if (_messages.isEmpty) {
+    final rows = _mergedRows;
+    if (rows.isEmpty) {
       return const Center(
         child: Padding(
           padding: EdgeInsets.all(24),
@@ -189,8 +272,25 @@ class _ChatScreenState extends State<ChatScreen> {
     return ListView.builder(
       controller: _scrollController,
       padding: const EdgeInsets.symmetric(vertical: 12),
-      itemCount: _messages.length,
-      itemBuilder: (context, index) => MessageBubble(message: _messages[index]),
+      itemCount: rows.length,
+      itemBuilder: (context, index) {
+        final row = rows[index];
+        if (row.confirmed != null) {
+          return MessageBubble(
+            content: row.confirmed!.content,
+            isAgent: row.confirmed!.role == MessageRole.agent,
+          );
+        }
+        final pending = row.pending!;
+        return MessageBubble(
+          content: pending.content,
+          isAgent: false,
+          status: pending.status == PendingMessageStatus.sending
+              ? BubbleDeliveryStatus.sending
+              : BubbleDeliveryStatus.failed,
+          onRetry: () => _outbox.retry(pending.localId),
+        );
+      },
     );
   }
 }

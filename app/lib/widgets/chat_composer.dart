@@ -4,14 +4,16 @@ import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 
 /// Message input row: text field + attach button + send button.
+///
+/// Sending is fire-and-forget into the local outbox (see OutboxService), so
+/// there's no network round trip to block on here — the field clears and
+/// the message shows "sending…" immediately, even offline.
 class ChatComposer extends StatefulWidget {
-  final bool sending;
   final void Function(String text) onSend;
   final void Function(PlatformFile file) onAttach;
 
   const ChatComposer({
     super.key,
-    required this.sending,
     required this.onSend,
     required this.onAttach,
   });
@@ -42,7 +44,7 @@ class _ChatComposerState extends State<ChatComposer> {
 
   void _submit() {
     final text = _controller.text.trim();
-    if (text.isEmpty || widget.sending) return;
+    if (text.isEmpty) return;
     widget.onSend(text);
     _controller.clear();
   }
@@ -62,7 +64,7 @@ class _ChatComposerState extends State<ChatComposer> {
           children: [
             IconButton(
               icon: const Icon(Icons.attach_file, color: AppColors.facebookBlue),
-              onPressed: widget.sending ? null : _pickAttachment,
+              onPressed: _pickAttachment,
               tooltip: 'Attach file',
             ),
             Expanded(
@@ -77,14 +79,8 @@ class _ChatComposerState extends State<ChatComposer> {
             ),
             const SizedBox(width: 4),
             IconButton(
-              icon: widget.sending
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.send, color: AppColors.facebookBlue),
-              onPressed: widget.sending ? null : _submit,
+              icon: const Icon(Icons.send, color: AppColors.facebookBlue),
+              onPressed: _submit,
               tooltip: 'Send',
             ),
           ],
