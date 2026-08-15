@@ -8,7 +8,9 @@
 const ANTHROPIC_VERSION = "2023-06-01";
 const DEFAULT_MODEL = "claude-sonnet-5";
 const DEFAULT_MAX_TOKENS = 8000;
-const DEFAULT_THINKING_BUDGET = 4000;
+// claude-sonnet-5 uses adaptive thinking (effort-based), not the older
+// manual "enabled"/budget_tokens shape — that shape 400s on this model.
+const DEFAULT_EFFORT = "high";
 
 export interface ClaudeMessage {
   role: "user" | "assistant";
@@ -36,7 +38,7 @@ export async function callClaude(opts: {
   messages: ClaudeMessage[];
   model?: string;
   maxTokens?: number;
-  thinkingBudget?: number;
+  effort?: "low" | "medium" | "high";
   enableWebSearch?: boolean;
 }): Promise<ClaudeResult> {
   const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
@@ -47,10 +49,11 @@ export async function callClaude(opts: {
   const body: Record<string, unknown> = {
     model: opts.model ?? DEFAULT_MODEL,
     max_tokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
-    thinking: {
-      type: "enabled",
-      budget_tokens: opts.thinkingBudget ?? DEFAULT_THINKING_BUDGET,
-    },
+    // display: "summarized" — claude-sonnet-5 defaults to "omitted" (thinking
+    // happens and is billed either way, but the text comes back empty). The
+    // brief requires persisting real thinking content, so opt into it.
+    thinking: { type: "adaptive", display: "summarized" },
+    output_config: { effort: opts.effort ?? DEFAULT_EFFORT },
     system: opts.systemPrompt,
     messages: opts.messages.map((m) => ({
       role: m.role,
