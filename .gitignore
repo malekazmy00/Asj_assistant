@@ -1,0 +1,36 @@
+# secrets
+.env
+.env.*
+!.env.example
+*.env.local
+app/dart_define.json
+worker/.env
+
+# Flutter
+app/.dart_tool/
+app/.flutter-plugin-dependencies
+app/build/
+app/.pub-cache/
+app/.pub/
+app/**/ios/Pods/
+app/**/android/.gradle/
+app/**/android/local.properties
+app/**/*.iml
+app/**/.idea/
+app/**/*.g.dart
+app/**/*.freezed.dart
+
+# Supabase
+supabase/.branches
+supabase/.temp
+
+# Python
+worker/__pycache__/
+worker/.venv/
+**/__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+app/android/key.properties
+app/android/keystore/

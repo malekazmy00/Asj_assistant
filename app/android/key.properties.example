@@ -1,0 +1,4 @@
+storePassword=changeme
+keyPassword=changeme
+keyAlias=medical_engineer_assistant
+storeFile=keystore/release.keystore

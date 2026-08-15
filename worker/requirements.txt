@@ -1,0 +1,10 @@
+supabase==2.9.1
+httpx==0.27.2
+python-dotenv==1.0.1
+
+# Uncomment when swapping the stub transcriber for the real pipeline —
+# see README.md "Going from stub to real WhisperX".
+# whisperx==3.3.1
+# faster-whisper==1.0.3
+# pyannote.audio==3.3.2
+# torch==2.4.1
