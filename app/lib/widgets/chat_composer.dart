@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../models/file_record.dart';
 import '../theme/app_theme.dart';
+import '../theme/responsive.dart';
 import 'image_thumbnail.dart';
 
 /// Message input row: staged-image strip (if any) + text field + attach
@@ -59,6 +60,7 @@ class _ChatComposerState extends State<ChatComposer> {
 
   @override
   Widget build(BuildContext context) {
+    final s = context.s;
     return Container(
       padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
       decoration: const BoxDecoration(
@@ -70,12 +72,12 @@ class _ChatComposerState extends State<ChatComposer> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (widget.stagedImages.isNotEmpty) _buildStagedStrip(),
+            if (widget.stagedImages.isNotEmpty) _buildStagedStrip(context),
             Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 IconButton(
-                  icon: const Icon(Icons.attach_file, color: AppColors.facebookBlue),
+                  icon: Icon(Icons.attach_file, color: AppColors.neutralIcon, size: s(24)),
                   onPressed: _pickAttachment,
                   tooltip: 'Attach file',
                 ),
@@ -85,13 +87,14 @@ class _ChatComposerState extends State<ChatComposer> {
                     minLines: 1,
                     maxLines: 5,
                     textCapitalization: TextCapitalization.sentences,
+                    style: TextStyle(color: AppColors.text, fontSize: s(15)),
                     decoration: const InputDecoration(hintText: 'Message'),
                     onSubmitted: (_) => _submit(),
                   ),
                 ),
-                const SizedBox(width: 4),
+                SizedBox(width: s(4)),
                 IconButton(
-                  icon: const Icon(Icons.send, color: AppColors.facebookBlue),
+                  icon: Icon(Icons.send, color: AppColors.medicalBlue, size: s(24)),
                   onPressed: _submit,
                   tooltip: 'Send',
                 ),
@@ -103,29 +106,30 @@ class _ChatComposerState extends State<ChatComposer> {
     );
   }
 
-  Widget _buildStagedStrip() {
+  Widget _buildStagedStrip(BuildContext context) {
+    final s = context.s;
     return SizedBox(
-      height: 68,
+      height: s(68),
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
         itemCount: widget.stagedImages.length,
-        separatorBuilder: (_, _) => const SizedBox(width: 6),
+        separatorBuilder: (_, _) => SizedBox(width: s(6)),
         itemBuilder: (context, index) {
           final file = widget.stagedImages[index];
           return Stack(
             clipBehavior: Clip.none,
             children: [
-              ImageThumbnail(fileId: file.id, size: 60),
+              ImageThumbnail(fileId: file.id, size: s(60)),
               Positioned(
                 top: -6,
                 right: -6,
                 child: GestureDetector(
                   onTap: () => widget.onRemoveStagedImage(index),
-                  child: const CircleAvatar(
+                  child: CircleAvatar(
                     radius: 10,
-                    backgroundColor: Colors.black87,
-                    child: Icon(Icons.close, size: 13, color: Colors.white),
+                    backgroundColor: AppColors.text.withValues(alpha: 0.8),
+                    child: const Icon(Icons.close, size: 13, color: AppColors.background),
                   ),
                 ),
               ),

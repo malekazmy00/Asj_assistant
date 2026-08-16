@@ -53,7 +53,7 @@ class _ConversationHistoryScreenState extends State<ConversationHistoryScreen> {
         title: const Text('Chats'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.add_comment_outlined, color: AppColors.facebookBlue),
+            icon: const Icon(Icons.add_comment_outlined, color: AppColors.neutralIcon),
             tooltip: 'New chat',
             onPressed: () => Navigator.of(context).pop('__new__'),
           ),
@@ -71,8 +71,8 @@ class _ConversationHistoryScreenState extends State<ConversationHistoryScreen> {
       return Center(child: Padding(padding: const EdgeInsets.all(24), child: Text(_error!)));
     }
     if (_items.isEmpty) {
-      return const Center(
-        child: Text('No past chats yet.', style: TextStyle(color: Colors.black54)),
+      return Center(
+        child: Text('No past chats yet.', style: TextStyle(color: AppColors.mutedText(0.6))),
       );
     }
     return RefreshIndicator(
@@ -96,7 +96,7 @@ class _ConversationHistoryScreenState extends State<ConversationHistoryScreen> {
             subtitle: Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
             trailing: Text(
               DateFormat.MMMd().format(timestamp),
-              style: const TextStyle(fontSize: 12, color: Colors.black45),
+              style: TextStyle(fontSize: 12, color: AppColors.mutedText(0.45)),
             ),
             onTap: () => Navigator.of(context).pop(conversation.id),
           );

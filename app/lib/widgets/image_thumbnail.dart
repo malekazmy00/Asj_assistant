@@ -59,18 +59,21 @@ class _ImageThumbnailState extends State<ImageThumbnail> {
       width: widget.size,
       height: widget.size,
       decoration: BoxDecoration(
-        color: AppColors.userBubbleBackground,
+        color: AppColors.surface,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: AppColors.facebookBlue.withValues(alpha: 0.3)),
+        border: Border.all(color: AppColors.border),
       ),
       child: Center(
         child: loading
-            ? const SizedBox(
+            ? SizedBox(
                 width: 20,
                 height: 20,
-                child: CircularProgressIndicator(strokeWidth: 2),
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: AppColors.mutedText(0.4),
+                ),
               )
-            : const Icon(Icons.broken_image_outlined, color: Colors.black26),
+            : Icon(Icons.broken_image_outlined, color: AppColors.mutedText(0.3)),
       ),
     );
   }

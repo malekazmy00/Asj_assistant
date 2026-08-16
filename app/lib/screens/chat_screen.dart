@@ -251,12 +251,12 @@ class _ChatScreenState extends State<ChatScreen> {
         title: const Text('Medical Engineer Assistant'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.history, color: AppColors.facebookBlue),
+            icon: const Icon(Icons.history, color: AppColors.neutralIcon),
             tooltip: 'Past chats',
             onPressed: _handleOpenHistory,
           ),
           IconButton(
-            icon: const Icon(Icons.add_comment_outlined, color: AppColors.facebookBlue),
+            icon: const Icon(Icons.add_comment_outlined, color: AppColors.neutralIcon),
             tooltip: 'New chat',
             onPressed: _handleNewChat,
           ),
@@ -292,12 +292,12 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     final rows = _mergedRows;
     if (rows.isEmpty) {
-      return const Center(
+      return Center(
         child: Padding(
-          padding: EdgeInsets.all(24),
+          padding: const EdgeInsets.all(24),
           child: Text(
             'Say hello to get started.',
-            style: TextStyle(color: Colors.black54),
+            style: TextStyle(color: AppColors.mutedText(0.55)),
           ),
         ),
       );

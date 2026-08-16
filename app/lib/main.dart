@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'config.dart';
@@ -8,14 +10,22 @@ import 'services/supabase_service.dart';
 import 'theme/app_theme.dart';
 
 Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  if (AppConfig.isConfigured) {
-    await SupabaseService.initialize();
-    // App-wide, not screen-scoped: pending sends keep retrying on reconnect
-    // even while the user is on the Library tab.
-    await OutboxService.instance.init();
-  }
-  runApp(const MedicalEngineerAssistantApp());
+  // A platform plugin misbehaving on some specific device (e.g. a
+  // connectivity check failing asynchronously, outside any try/catch we
+  // control) should never be able to take the whole app down to a blank
+  // screen — log it and keep going.
+  runZonedGuarded(() async {
+    WidgetsFlutterBinding.ensureInitialized();
+    if (AppConfig.isConfigured) {
+      await SupabaseService.initialize();
+      // App-wide, not screen-scoped: pending sends keep retrying on
+      // reconnect even while the user is on the Library tab.
+      await OutboxService.instance.init();
+    }
+    runApp(const MedicalEngineerAssistantApp());
+  }, (error, stack) {
+    debugPrint('Uncaught error: $error\n$stack');
+  });
 }
 
 class MedicalEngineerAssistantApp extends StatelessWidget {

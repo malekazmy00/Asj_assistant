@@ -3,6 +3,7 @@ import 'package:intl/intl.dart';
 
 import '../models/file_record.dart';
 import '../theme/app_theme.dart';
+import '../theme/responsive.dart';
 
 class LibraryRow extends StatelessWidget {
   final FileRecord file;
@@ -46,27 +47,28 @@ class LibraryRow extends StatelessWidget {
     };
     return Padding(
       padding: const EdgeInsets.only(left: 8),
-      child: Text(label, style: const TextStyle(fontSize: 12, color: Colors.black54)),
+      child: Text(label, style: TextStyle(fontSize: 12, color: AppColors.mutedText(0.6))),
     );
   }
 
   @override
   Widget build(BuildContext context) {
+    final s = context.s;
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      padding: EdgeInsets.symmetric(horizontal: s(16), vertical: s(12)),
       child: Row(
         children: [
           Container(
-            width: 40,
-            height: 40,
+            width: s(40),
+            height: s(40),
             decoration: BoxDecoration(
-              color: AppColors.userBubbleBackground,
+              color: AppColors.surface,
               shape: BoxShape.circle,
-              border: Border.all(color: AppColors.facebookBlue, width: kBorderWidth),
+              border: Border.all(color: AppColors.border, width: kBubbleBorderWidth),
             ),
-            child: Icon(_icon, color: AppColors.facebookBlue, size: 20),
+            child: Icon(_icon, color: AppColors.neutralIcon, size: s(20)),
           ),
-          const SizedBox(width: 12),
+          SizedBox(width: s(12)),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -75,18 +77,22 @@ class LibraryRow extends StatelessWidget {
                   file.filename,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
+                  style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: s(15),
+                    color: AppColors.text,
+                  ),
                 ),
-                const SizedBox(height: 2),
+                SizedBox(height: s(2)),
                 Row(
                   children: [
                     Text(
                       _sizeOrDuration,
-                      style: const TextStyle(fontSize: 12, color: Colors.black54),
+                      style: TextStyle(fontSize: 12, color: AppColors.mutedText(0.6)),
                     ),
                     Text(
                       '  •  ${DateFormat.jm().format(file.uploadedAt)}',
-                      style: const TextStyle(fontSize: 12, color: Colors.black54),
+                      style: TextStyle(fontSize: 12, color: AppColors.mutedText(0.6)),
                     ),
                     _statusChip(),
                   ],
@@ -107,12 +113,12 @@ class _VerifiedBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = verified ? AppColors.facebookBlue : Colors.black38;
+    final color = verified ? AppColors.text : AppColors.mutedText(0.4);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color, width: kBorderWidth),
+        border: Border.all(color: verified ? AppColors.border : AppColors.mutedText(0.2)),
       ),
       child: Text(
         verified ? 'Verified' : 'Unverified',

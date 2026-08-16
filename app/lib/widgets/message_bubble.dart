@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
+import '../theme/responsive.dart';
 import 'image_thumbnail.dart';
 
 enum BubbleDeliveryStatus { sent, sending, failed }
@@ -42,21 +43,18 @@ class MessageBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final hasText = content.trim().isNotEmpty;
+    final s = context.s;
+    final borderColor = status == BubbleDeliveryStatus.failed
+        ? Colors.red.shade300
+        : (isAgent ? AppColors.agentBubbleBorder : AppColors.userBubbleBorder);
 
     final bubble = Container(
-      constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.78),
-      padding: const EdgeInsets.all(6),
+      constraints: BoxConstraints(maxWidth: context.screenWidth * 0.78),
+      padding: EdgeInsets.all(s(6)),
       decoration: BoxDecoration(
         color: isAgent ? AppColors.agentBubble : AppColors.userBubbleBackground,
         borderRadius: BorderRadius.circular(16),
-        border: isAgent
-            ? null
-            : Border.all(
-                color: status == BubbleDeliveryStatus.failed
-                    ? Colors.red.shade400
-                    : AppColors.userBubbleBorder,
-                width: kBorderWidth,
-              ),
+        border: Border.all(color: borderColor, width: kBubbleBorderWidth),
       ),
       child: Opacity(
         opacity: status == BubbleDeliveryStatus.sending ? 0.6 : 1.0,
@@ -66,14 +64,19 @@ class MessageBubble extends StatelessWidget {
           children: [
             if (attachmentFileIds.isNotEmpty)
               Padding(
-                padding: EdgeInsets.only(bottom: hasText ? 6 : 2, top: 2, left: 2, right: 2),
+                padding: EdgeInsets.only(
+                  bottom: hasText ? s(6) : s(2),
+                  top: s(2),
+                  left: s(2),
+                  right: s(2),
+                ),
                 child: Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
+                  spacing: s(6),
+                  runSpacing: s(6),
                   children: attachmentFileIds
                       .map((id) => ImageThumbnail(
                             fileId: id,
-                            size: 120,
+                            size: s(120),
                             onTap: () => _openFullscreen(context, id),
                           ))
                       .toList(),
@@ -81,16 +84,16 @@ class MessageBubble extends StatelessWidget {
               ),
             if (hasText)
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                padding: EdgeInsets.symmetric(horizontal: s(8), vertical: s(4)),
                 child: Text(
                   content,
-                  style: const TextStyle(color: AppColors.bubbleText, fontSize: 15, height: 1.35),
+                  style: TextStyle(color: AppColors.bubbleText, fontSize: s(15), height: 1.35),
                 ),
               ),
             if (status != BubbleDeliveryStatus.sent) ...[
-              const SizedBox(height: 2),
+              SizedBox(height: s(2)),
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8),
+                padding: EdgeInsets.symmetric(horizontal: s(8)),
                 child: _StatusRow(status: status, onRetry: onRetry),
               ),
             ],
@@ -104,7 +107,7 @@ class MessageBubble extends StatelessWidget {
         : bubble;
 
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
+      padding: EdgeInsets.symmetric(vertical: s(4), horizontal: s(12)),
       child: Row(
         mainAxisAlignment: isAgent ? MainAxisAlignment.start : MainAxisAlignment.end,
         children: [tappable],
@@ -122,16 +125,16 @@ class _StatusRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (status == BubbleDeliveryStatus.sending) {
-      return const Row(
+      return Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           SizedBox(
             width: 10,
             height: 10,
-            child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.black45),
+            child: CircularProgressIndicator(strokeWidth: 1.5, color: AppColors.mutedText(0.45)),
           ),
-          SizedBox(width: 4),
-          Text('Sending…', style: TextStyle(fontSize: 11, color: Colors.black45)),
+          const SizedBox(width: 4),
+          Text('Sending…', style: TextStyle(fontSize: 11, color: AppColors.mutedText(0.45))),
         ],
       );
     }

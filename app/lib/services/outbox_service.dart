@@ -57,10 +57,17 @@ class OutboxService extends ChangeNotifier {
       unawaited(_attemptSend(item));
     }
 
-    _connectivitySub = Connectivity().onConnectivityChanged.listen((results) {
-      final hasConnection = results.any((r) => r != ConnectivityResult.none);
-      if (hasConnection) retryAllFailed();
-    });
+    // Auto-retry on reconnect is a nice-to-have on top of manual retry —
+    // never let a connectivity-plugin failure (e.g. no NetworkManager on
+    // some Linux setups) take the rest of the app down with it.
+    try {
+      _connectivitySub = Connectivity().onConnectivityChanged.listen((results) {
+        final hasConnection = results.any((r) => r != ConnectivityResult.none);
+        if (hasConnection) retryAllFailed();
+      }, onError: (_) {});
+    } catch (e) {
+      debugPrint('Connectivity monitoring unavailable, auto-retry-on-reconnect disabled: $e');
+    }
   }
 
   Future<void> _persist() async {

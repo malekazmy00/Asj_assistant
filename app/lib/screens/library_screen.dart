@@ -96,16 +96,16 @@ class _LibraryScreenState extends State<LibraryScreen> {
                 setState(() => _filter = type);
                 _load();
               },
-              selectedColor: AppColors.facebookBlue.withValues(alpha: 0.15),
+              selectedColor: AppColors.border.withValues(alpha: 0.55),
               labelStyle: TextStyle(
-                color: selected ? AppColors.facebookBlue : Colors.black87,
+                color: selected ? AppColors.text : AppColors.mutedText(0.6),
                 fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
               ),
               side: BorderSide(
-                color: AppColors.facebookBlue,
+                color: AppColors.border,
                 width: selected ? kBorderWidth : 1,
               ),
-              backgroundColor: AppColors.background,
+              backgroundColor: AppColors.surface,
             ),
           );
         }).toList(),
@@ -122,8 +122,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
       return Center(child: Padding(padding: const EdgeInsets.all(24), child: Text(_error!)));
     }
     if (_files.isEmpty) {
-      return const Center(
-        child: Text('No uploads yet.', style: TextStyle(color: Colors.black54)),
+      return Center(
+        child: Text('No uploads yet.', style: TextStyle(color: AppColors.mutedText(0.6))),
       );
     }
     return RefreshIndicator(
@@ -135,7 +135,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
               child: Text(
                 entry.key,
-                style: const TextStyle(fontWeight: FontWeight.w700, color: Colors.black54),
+                style: TextStyle(fontWeight: FontWeight.w700, color: AppColors.mutedText(0.6)),
               ),
             ),
             ...entry.value.map((file) => Column(
