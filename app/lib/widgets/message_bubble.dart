@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
+import 'image_thumbnail.dart';
 
 enum BubbleDeliveryStatus { sent, sending, failed }
 
 class MessageBubble extends StatelessWidget {
   final String content;
   final bool isAgent;
+  final List<String> attachmentFileIds;
   final BubbleDeliveryStatus status;
   final VoidCallback? onRetry;
 
@@ -14,15 +16,36 @@ class MessageBubble extends StatelessWidget {
     super.key,
     required this.content,
     required this.isAgent,
+    this.attachmentFileIds = const [],
     this.status = BubbleDeliveryStatus.sent,
     this.onRetry,
   });
 
+  void _openFullscreen(BuildContext context, String fileId) {
+    showDialog(
+      context: context,
+      barrierColor: Colors.black87,
+      builder: (context) => GestureDetector(
+        onTap: () => Navigator.of(context).pop(),
+        child: Scaffold(
+          backgroundColor: Colors.transparent,
+          body: Center(
+            child: InteractiveViewer(
+              child: ImageThumbnail(fileId: fileId, size: double.infinity),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final hasText = content.trim().isNotEmpty;
+
     final bubble = Container(
       constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.78),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      padding: const EdgeInsets.all(6),
       decoration: BoxDecoration(
         color: isAgent ? AppColors.agentBubble : AppColors.userBubbleBackground,
         borderRadius: BorderRadius.circular(16),
@@ -41,13 +64,35 @@ class MessageBubble extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.end,
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(
-              content,
-              style: const TextStyle(color: AppColors.bubbleText, fontSize: 15, height: 1.35),
-            ),
+            if (attachmentFileIds.isNotEmpty)
+              Padding(
+                padding: EdgeInsets.only(bottom: hasText ? 6 : 2, top: 2, left: 2, right: 2),
+                child: Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: attachmentFileIds
+                      .map((id) => ImageThumbnail(
+                            fileId: id,
+                            size: 120,
+                            onTap: () => _openFullscreen(context, id),
+                          ))
+                      .toList(),
+                ),
+              ),
+            if (hasText)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                child: Text(
+                  content,
+                  style: const TextStyle(color: AppColors.bubbleText, fontSize: 15, height: 1.35),
+                ),
+              ),
             if (status != BubbleDeliveryStatus.sent) ...[
-              const SizedBox(height: 4),
-              _StatusRow(status: status, onRetry: onRetry),
+              const SizedBox(height: 2),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: _StatusRow(status: status, onRetry: onRetry),
+              ),
             ],
           ],
         ),

@@ -7,6 +7,7 @@ import '../models/conversation.dart';
 import '../models/file_record.dart';
 import '../models/message.dart';
 import '../models/pending_message.dart';
+import '../services/image_cache_service.dart';
 import '../services/outbox_service.dart';
 import '../services/session_service.dart';
 import '../services/supabase_service.dart';
@@ -45,6 +46,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Conversation? _conversation;
   StreamSubscription<List<ChatMessage>>? _sub;
   List<ChatMessage> _messages = [];
+  List<FileRecord> _stagedImages = [];
   bool _loading = true;
   String? _error;
 
@@ -125,7 +127,10 @@ class _ChatScreenState extends State<ChatScreen> {
   void _handleSend(String text) {
     final conversation = _conversation;
     if (conversation == null) return;
-    _outbox.send(conversation.id, text);
+    if (text.trim().isEmpty && _stagedImages.isEmpty) return;
+    final attachmentIds = _stagedImages.map((f) => f.id).toList();
+    _outbox.send(conversation.id, text, attachmentFileIds: attachmentIds);
+    setState(() => _stagedImages = []);
     _scrollToBottom();
   }
 
@@ -167,6 +172,16 @@ class _ChatScreenState extends State<ChatScreen> {
         fileType: fileType,
       );
       await _service.triggerFileProcessing(record.id);
+
+      if (fileType == LibraryFileType.image) {
+        // Images aren't a standalone "upload and process" thing like docs —
+        // they're staged and go out attached to the next message, straight
+        // to Claude's vision input.
+        ImageCacheService.instance.primeBytes(record.id, bytes);
+        if (mounted) setState(() => _stagedImages = [..._stagedImages, record]);
+        return;
+      }
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Uploaded ${file.name}')),
@@ -177,6 +192,12 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  void _handleRemoveStagedImage(int index) {
+    setState(() {
+      _stagedImages = [..._stagedImages]..removeAt(index);
+    });
+  }
+
   void _showError(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
@@ -185,8 +206,10 @@ class _ChatScreenState extends State<ChatScreen> {
   LibraryFileType _fileTypeForExtension(String ext) {
     const audioExts = {'mp3', 'wav', 'm4a', 'aac'};
     const videoExts = {'mp4', 'mov', 'mkv'};
+    const imageExts = {'jpg', 'jpeg', 'png', 'webp', 'gif'};
     if (audioExts.contains(ext)) return LibraryFileType.audio;
     if (videoExts.contains(ext)) return LibraryFileType.video;
+    if (imageExts.contains(ext)) return LibraryFileType.image;
     return LibraryFileType.document;
   }
 
@@ -204,6 +227,11 @@ class _ChatScreenState extends State<ChatScreen> {
       'mp4': 'video/mp4',
       'mov': 'video/quicktime',
       'mkv': 'video/x-matroska',
+      'jpg': 'image/jpeg',
+      'jpeg': 'image/jpeg',
+      'png': 'image/png',
+      'webp': 'image/webp',
+      'gif': 'image/gif',
     };
     return map[ext] ?? 'application/octet-stream';
   }
@@ -238,7 +266,12 @@ class _ChatScreenState extends State<ChatScreen> {
         child: Column(
           children: [
             Expanded(child: _buildBody()),
-            ChatComposer(onSend: _handleSend, onAttach: _handleAttach),
+            ChatComposer(
+              onSend: _handleSend,
+              onAttach: _handleAttach,
+              stagedImages: _stagedImages,
+              onRemoveStagedImage: _handleRemoveStagedImage,
+            ),
           ],
         ),
       ),
@@ -279,12 +312,14 @@ class _ChatScreenState extends State<ChatScreen> {
           return MessageBubble(
             content: row.confirmed!.content,
             isAgent: row.confirmed!.role == MessageRole.agent,
+            attachmentFileIds: row.confirmed!.attachmentFileIds,
           );
         }
         final pending = row.pending!;
         return MessageBubble(
           content: pending.content,
           isAgent: false,
+          attachmentFileIds: pending.attachmentFileIds,
           status: pending.status == PendingMessageStatus.sending
               ? BubbleDeliveryStatus.sending
               : BubbleDeliveryStatus.failed,

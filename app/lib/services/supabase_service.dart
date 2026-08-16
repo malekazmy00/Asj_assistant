@@ -144,6 +144,19 @@ class SupabaseService {
     return rows.map((row) => FileRecord.fromJson(row)).toList();
   }
 
+  /// Downloads a file's raw bytes by its `files.id`, for rendering image
+  /// attachments (see ImageCacheService). Returns null if the file record
+  /// or the underlying storage object is missing.
+  Future<Uint8List?> downloadFileBytesById(String fileId) async {
+    final row = await _client
+        .from('files')
+        .select('storage_path')
+        .eq('id', fileId)
+        .maybeSingle();
+    if (row == null) return null;
+    return _client.storage.from('uploads').download(row['storage_path'] as String);
+  }
+
   Future<FileRecord> uploadFile({
     required String conversationId,
     required String filename,

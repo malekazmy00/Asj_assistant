@@ -12,9 +12,23 @@ const DEFAULT_MAX_TOKENS = 8000;
 // manual "enabled"/budget_tokens shape — that shape 400s on this model.
 const DEFAULT_EFFORT = "high";
 
+export interface ClaudeImageBlock {
+  type: "image";
+  source: { type: "base64"; media_type: string; data: string };
+}
+
+export interface ClaudeTextBlock {
+  type: "text";
+  text: string;
+}
+
+export type ClaudeContentBlock = ClaudeTextBlock | ClaudeImageBlock;
+
 export interface ClaudeMessage {
   role: "user" | "assistant";
-  content: string;
+  // A plain string is the common case (wrapped in a single text block
+  // below); pass an array directly for messages carrying images.
+  content: string | ClaudeContentBlock[];
 }
 
 export interface WebSearchCitation {
@@ -57,7 +71,7 @@ export async function callClaude(opts: {
     system: opts.systemPrompt,
     messages: opts.messages.map((m) => ({
       role: m.role,
-      content: [{ type: "text", text: m.content }],
+      content: typeof m.content === "string" ? [{ type: "text", text: m.content }] : m.content,
     })),
   };
 

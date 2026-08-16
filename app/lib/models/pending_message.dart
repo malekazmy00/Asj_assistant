@@ -12,6 +12,7 @@ class PendingMessage {
   final String content;
   final DateTime createdAt;
   final PendingMessageStatus status;
+  final List<String> attachmentFileIds;
 
   PendingMessage({
     required this.localId,
@@ -19,6 +20,7 @@ class PendingMessage {
     required this.content,
     required this.createdAt,
     required this.status,
+    this.attachmentFileIds = const [],
   });
 
   PendingMessage copyWith({PendingMessageStatus? status}) {
@@ -28,6 +30,7 @@ class PendingMessage {
       content: content,
       createdAt: createdAt,
       status: status ?? this.status,
+      attachmentFileIds: attachmentFileIds,
     );
   }
 
@@ -37,6 +40,7 @@ class PendingMessage {
         'content': content,
         'createdAt': createdAt.toIso8601String(),
         'status': status.name,
+        'attachmentFileIds': attachmentFileIds,
       };
 
   factory PendingMessage.fromJson(Map<String, dynamic> json) {
@@ -46,6 +50,8 @@ class PendingMessage {
       content: json['content'] as String,
       createdAt: DateTime.parse(json['createdAt'] as String),
       status: PendingMessageStatus.values.byName(json['status'] as String? ?? 'failed'),
+      attachmentFileIds:
+          (json['attachmentFileIds'] as List?)?.whereType<String>().toList() ?? const [],
     );
   }
 }

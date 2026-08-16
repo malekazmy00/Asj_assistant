@@ -76,11 +76,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
       ('Docs', LibraryFileType.document),
       ('Audio', LibraryFileType.audio),
       ('Video', LibraryFileType.video),
+      ('Photos', LibraryFileType.image),
     ];
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      child: Row(
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
         children: options.map((option) {
           final (label, type) = option;
           final selected = _filter == type;
@@ -106,6 +109,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
             ),
           );
         }).toList(),
+        ),
       ),
     );
   }

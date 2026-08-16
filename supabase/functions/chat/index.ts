@@ -1,8 +1,10 @@
 // The `chat` Edge Function: the whole conversational loop.
 //
-// 1. Persist the user's message (idempotently — see below).
+// 1. Persist the user's message (idempotently — see below), including any
+//    image attachments.
 // 2. Embed it and pull relevant context via pgvector (RAG).
-// 3. Call Claude with extended thinking + the web search tool.
+// 3. Call Claude with extended thinking, the web search tool, and any
+//    images — this turn's and, within the history window, earlier ones too.
 // 4. Persist the agent's reply, with thinking stored separately.
 // 5. Silently (fire-and-forget) extract knowledge from what the user said.
 //
@@ -18,10 +20,11 @@
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { corsHeaders, handleOptions, jsonResponse } from "../_shared/cors.ts";
-import { callClaude, type ClaudeMessage } from "../_shared/anthropic.ts";
+import { callClaude, type ClaudeContentBlock, type ClaudeMessage } from "../_shared/anthropic.ts";
 import { buildSystemPrompt } from "../_shared/system_prompt.ts";
 import { embed, toPgVector } from "../_shared/embeddings.ts";
 import { extractKnowledge } from "../_shared/extract_knowledge.ts";
+import { buildImageBlocks, fetchImageFiles } from "../_shared/attachments.ts";
 
 // deno-lint-ignore no-explicit-any
 declare const EdgeRuntime: any;
@@ -35,10 +38,15 @@ Deno.serve(async (req) => {
   if (preflight) return preflight;
 
   try {
-    const { conversation_id, content, client_message_id } = await req.json();
+    const { conversation_id, content, client_message_id, attachment_file_ids } = await req.json();
+    const attachmentIds: string[] = Array.isArray(attachment_file_ids) ? attachment_file_ids : [];
+    const text: string = typeof content === "string" ? content : "";
 
-    if (!conversation_id || typeof content !== "string" || !content.trim()) {
-      return jsonResponse({ error: "conversation_id and non-empty content are required" }, 400);
+    if (!conversation_id || (!text.trim() && attachmentIds.length === 0)) {
+      return jsonResponse(
+        { error: "conversation_id and (non-empty content or attachment_file_ids) are required" },
+        400,
+      );
     }
 
     const supabase = createClient(
@@ -88,8 +96,9 @@ Deno.serve(async (req) => {
       const insertPayload: Record<string, unknown> = {
         conversation_id,
         role: "user",
-        content,
+        content: text,
         author_id: engineerId,
+        metadata: { attachment_file_ids: attachmentIds },
       };
       if (client_message_id) insertPayload.id = client_message_id;
 
@@ -102,57 +111,87 @@ Deno.serve(async (req) => {
       userMessage = inserted;
     }
 
-    // 2. Embed it; retrieve relevant context. Upsert since a resumed retry
-    // may have already embedded this message in a prior attempt.
+    // 2. Embed it; retrieve relevant context. (Skip for image-only
+    // messages with no text — nothing meaningful to embed.) Upsert since a
+    // resumed retry may have already embedded this message in a prior
+    // attempt.
     let ragContext = "";
-    try {
-      const queryEmbedding = await embed(content);
+    if (text.trim()) {
+      try {
+        const queryEmbedding = await embed(text);
 
-      await supabase.from("embeddings").upsert({
-        source_type: "message",
-        source_id: userMessage.id,
-        content_preview: content.slice(0, 2000),
-        embedding: toPgVector(queryEmbedding),
-      }, { onConflict: "source_type,source_id" });
+        await supabase.from("embeddings").upsert({
+          source_type: "message",
+          source_id: userMessage.id,
+          content_preview: text.slice(0, 2000),
+          embedding: toPgVector(queryEmbedding),
+        }, { onConflict: "source_type,source_id" });
 
-      const { data: matches } = await supabase.rpc("match_embeddings", {
-        query_embedding: toPgVector(queryEmbedding),
-        match_count: RAG_MATCH_COUNT,
-        exclude_source_type: "message",
-        exclude_source_id: userMessage.id,
-      });
+        const { data: matches } = await supabase.rpc("match_embeddings", {
+          query_embedding: toPgVector(queryEmbedding),
+          match_count: RAG_MATCH_COUNT,
+          exclude_source_type: "message",
+          exclude_source_id: userMessage.id,
+        });
 
-      const relevant = (matches ?? []).filter(
-        // deno-lint-ignore no-explicit-any
-        (m: any) => m.similarity >= RAG_MIN_SIMILARITY,
-      );
-
-      if (relevant.length > 0) {
-        const lines = relevant
+        const relevant = (matches ?? []).filter(
           // deno-lint-ignore no-explicit-any
-          .map((m: any) => `- ${m.content_preview}`)
-          .join("\n");
-        ragContext =
-          `\n# Things you already know that might be relevant right now\n` +
-          `(Use this naturally if it fits the moment — don't recite it verbatim, and don't force a connection that isn't there.)\n${lines}\n`;
+          (m: any) => m.similarity >= RAG_MIN_SIMILARITY,
+        );
+
+        if (relevant.length > 0) {
+          const lines = relevant
+            // deno-lint-ignore no-explicit-any
+            .map((m: any) => `- ${m.content_preview}`)
+            .join("\n");
+          ragContext =
+            `\n# Things you already know that might be relevant right now\n` +
+            `(Use this naturally if it fits the moment — don't recite it verbatim, and don't force a connection that isn't there.)\n${lines}\n`;
+        }
+      } catch (e) {
+        console.error("RAG retrieval failed, continuing without context:", e);
       }
-    } catch (e) {
-      console.error("RAG retrieval failed, continuing without context:", e);
     }
 
-    // 3. Build history and call Claude.
+    // 3. Build history — reconstructing image attachments for any message
+    // within the window that carried them, not just this turn's — and
+    // call Claude.
     const { data: historyRows, error: historyError } = await supabase
       .from("messages")
-      .select("role, content")
+      .select("role, content, metadata")
       .eq("conversation_id", conversation_id)
       .order("created_at", { ascending: true })
       .limit(MAX_HISTORY_MESSAGES);
     if (historyError) throw historyError;
 
-    const claudeMessages: ClaudeMessage[] = (historyRows ?? []).map((m) => ({
-      role: m.role === "agent" ? "assistant" : "user",
-      content: m.content,
-    }));
+    const rows = historyRows ?? [];
+
+    const attachmentIdsInHistory = new Set<string>();
+    for (const row of rows) {
+      const ids = (row.metadata as { attachment_file_ids?: string[] } | null)?.attachment_file_ids;
+      ids?.forEach((id) => attachmentIdsInHistory.add(id));
+    }
+    const imageFileMap = attachmentIdsInHistory.size > 0
+      ? await fetchImageFiles(supabase, [...attachmentIdsInHistory])
+      : new Map();
+
+    const claudeMessages: ClaudeMessage[] = [];
+    for (const row of rows) {
+      const role: "user" | "assistant" = row.role === "agent" ? "assistant" : "user";
+      const ids = (row.metadata as { attachment_file_ids?: string[] } | null)?.attachment_file_ids;
+
+      if (ids?.length) {
+        const files = ids
+          .map((id: string) => imageFileMap.get(id))
+          .filter((f: unknown): f is NonNullable<typeof f> => !!f);
+        const imageBlocks = await buildImageBlocks(supabase, files);
+        const blocks: ClaudeContentBlock[] = [...imageBlocks];
+        if (row.content?.trim()) blocks.push({ type: "text", text: row.content });
+        claudeMessages.push({ role, content: blocks.length > 0 ? blocks : row.content });
+      } else {
+        claudeMessages.push({ role, content: row.content });
+      }
+    }
 
     const systemPrompt = buildSystemPrompt(ragContext);
     const result = await callClaude({ systemPrompt, messages: claudeMessages });
@@ -193,7 +232,7 @@ Deno.serve(async (req) => {
     // 5. Silent knowledge extraction — never blocks the response.
     const backgroundWork = (async () => {
       try {
-        const facts = await extractKnowledge(content);
+        const facts = await extractKnowledge(text);
         for (const fact of facts) {
           const { data: knowledgeRow, error } = await supabase
             .from("extracted_knowledge")

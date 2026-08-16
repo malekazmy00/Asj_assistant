@@ -4,6 +4,11 @@
 //   chunk, mark the file completed (or failed with a reason).
 // - audio/video: nothing to do here — they stay `pending` and are picked up
 //   by the separate WhisperX worker (see /worker), which owns transcription.
+// - images: nothing to do here either — no OCR/chunking step. Images go
+//   straight to Claude's native vision input when attached to a chat
+//   message (see chat/index.ts), so they're marked completed immediately
+//   (the Flutter client actually does this at upload time and doesn't call
+//   this function for images at all — this branch exists as a safety net).
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { corsHeaders, handleOptions, jsonResponse } from "../_shared/cors.ts";
@@ -30,6 +35,14 @@ Deno.serve(async (req) => {
       .eq("id", file_id)
       .single();
     if (fileError) throw fileError;
+
+    if (file.file_type === "image") {
+      await supabase
+        .from("files")
+        .update({ processing_status: "completed", processed_at: new Date().toISOString() })
+        .eq("id", file_id);
+      return jsonResponse({ status: "completed" });
+    }
 
     if (file.file_type !== "document") {
       // Audio/video: leave as `pending` for the WhisperX worker to pick up.

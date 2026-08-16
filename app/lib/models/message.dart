@@ -22,6 +22,12 @@ class ChatMessage {
     this.metadata = const {},
   });
 
+  List<String> get attachmentFileIds {
+    final raw = metadata['attachment_file_ids'];
+    if (raw is! List) return const [];
+    return raw.whereType<String>().toList();
+  }
+
   factory ChatMessage.fromJson(Map<String, dynamic> json) {
     return ChatMessage(
       id: json['id'] as String,

@@ -17,6 +17,8 @@ class LibraryRow extends StatelessWidget {
         return Icons.videocam;
       case LibraryFileType.document:
         return Icons.description;
+      case LibraryFileType.image:
+        return Icons.image;
     }
   }
 

@@ -1,4 +1,4 @@
-enum LibraryFileType { document, audio, video }
+enum LibraryFileType { document, audio, video, image }
 
 LibraryFileType fileTypeFromString(String value) {
   switch (value) {
@@ -6,6 +6,8 @@ LibraryFileType fileTypeFromString(String value) {
       return LibraryFileType.audio;
     case 'video':
       return LibraryFileType.video;
+    case 'image':
+      return LibraryFileType.image;
     default:
       return LibraryFileType.document;
   }
