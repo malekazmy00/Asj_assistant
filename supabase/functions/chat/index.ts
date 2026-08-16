@@ -25,6 +25,7 @@ import { buildSystemPrompt } from "../_shared/system_prompt.ts";
 import { embed, toPgVector } from "../_shared/embeddings.ts";
 import { extractKnowledge } from "../_shared/extract_knowledge.ts";
 import { buildImageBlocks, fetchImageFiles } from "../_shared/attachments.ts";
+import { labelRagMatches } from "../_shared/rag_sources.ts";
 
 // deno-lint-ignore no-explicit-any
 declare const EdgeRuntime: any;
@@ -140,13 +141,11 @@ Deno.serve(async (req) => {
         );
 
         if (relevant.length > 0) {
-          const lines = relevant
-            // deno-lint-ignore no-explicit-any
-            .map((m: any) => `- ${m.content_preview}`)
-            .join("\n");
+          const lines = (await labelRagMatches(supabase, relevant)).join("\n");
           ragContext =
             `\n# Things you already know that might be relevant right now\n` +
-            `(Use this naturally if it fits the moment — don't recite it verbatim, and don't force a connection that isn't there.)\n${lines}\n`;
+            `(Use this naturally if it fits the moment — don't recite it verbatim, and don't force a connection that isn't there. ` +
+            `Lines tagged "from the document/recording ..." are cite-able by name; untagged lines are your own recall — don't invent a source for those.)\n${lines}\n`;
         }
       } catch (e) {
         console.error("RAG retrieval failed, continuing without context:", e);

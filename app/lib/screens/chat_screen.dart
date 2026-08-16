@@ -1,12 +1,16 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:uuid/uuid.dart';
 
 import '../models/conversation.dart';
 import '../models/file_record.dart';
 import '../models/message.dart';
 import '../models/pending_message.dart';
+import '../models/upload_task.dart';
+import '../services/export_service.dart';
 import '../services/image_cache_service.dart';
 import '../services/outbox_service.dart';
 import '../services/session_service.dart';
@@ -46,9 +50,12 @@ class _ChatScreenState extends State<ChatScreen> {
   Conversation? _conversation;
   StreamSubscription<List<ChatMessage>>? _sub;
   List<ChatMessage> _messages = [];
-  List<FileRecord> _stagedImages = [];
+  List<UploadTask> _uploadTasks = [];
   bool _loading = true;
   String? _error;
+
+  final _composerController = TextEditingController();
+  final _composerFocusNode = FocusNode();
 
   @override
   void initState() {
@@ -127,10 +134,14 @@ class _ChatScreenState extends State<ChatScreen> {
   void _handleSend(String text) {
     final conversation = _conversation;
     if (conversation == null) return;
-    if (text.trim().isEmpty && _stagedImages.isEmpty) return;
-    final attachmentIds = _stagedImages.map((f) => f.id).toList();
+    final readyImages = _uploadTasks.where(
+      (t) => t.fileType == LibraryFileType.image && t.status == UploadTaskStatus.completed,
+    );
+    final attachmentIds = readyImages.map((t) => t.fileId!).toList();
+    if (text.trim().isEmpty && attachmentIds.isEmpty) return;
     _outbox.send(conversation.id, text, attachmentFileIds: attachmentIds);
-    setState(() => _stagedImages = []);
+    final sentIds = readyImages.map((t) => t.id).toSet();
+    setState(() => _uploadTasks = _uploadTasks.where((t) => !sentIds.contains(t.id)).toList());
     _scrollToBottom();
   }
 
@@ -162,40 +173,159 @@ class _ChatScreenState extends State<ChatScreen> {
     final fileType = _fileTypeForExtension(ext);
     final mimeType = _mimeTypeForExtension(ext);
 
+    final Uint8List bytes;
     try {
-      final bytes = await file.readAsBytes();
-      final record = await _service.uploadFile(
+      bytes = await file.readAsBytes();
+    } catch (e) {
+      _showError('Could not read ${file.name}: $e');
+      return;
+    }
+
+    // Documents get an optional light tag (brand/device type) at upload
+    // time — used for Library filtering and to help the agent weight
+    // related sources. Not asked for other file types; keep it quick.
+    String? tag;
+    if (fileType == LibraryFileType.document) {
+      tag = await _promptForTag();
+    }
+
+    final taskId = const Uuid().v4();
+    final task = UploadTask(
+      id: taskId,
+      filename: file.name,
+      fileType: fileType,
+      previewBytes: fileType == LibraryFileType.image ? bytes : null,
+    );
+    setState(() => _uploadTasks = [..._uploadTasks, task]);
+
+    void updateTask(UploadTask Function(UploadTask current) update) {
+      if (!mounted) return;
+      setState(() {
+        _uploadTasks = _uploadTasks.map((t) => t.id == taskId ? update(t) : t).toList();
+      });
+    }
+
+    try {
+      final record = await _service.uploadFileWithProgress(
         conversationId: conversation.id,
         filename: file.name,
         bytes: bytes,
         mimeType: mimeType,
         fileType: fileType,
+        tag: tag,
+        onProgress: (progress) => updateTask((t) => t.copyWith(progress: progress)),
       );
-      await _service.triggerFileProcessing(record.id);
+      unawaited(_service.triggerFileProcessing(record.id));
 
       if (fileType == LibraryFileType.image) {
         // Images aren't a standalone "upload and process" thing like docs —
-        // they're staged and go out attached to the next message, straight
-        // to Claude's vision input.
+        // they stay staged in the composer and go out attached to the next
+        // message, straight to Claude's vision input.
         ImageCacheService.instance.primeBytes(record.id, bytes);
-        if (mounted) setState(() => _stagedImages = [..._stagedImages, record]);
+        updateTask((t) => t.copyWith(status: UploadTaskStatus.completed, fileId: record.id));
         return;
       }
 
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Uploaded ${file.name}')),
-        );
-      }
+      updateTask((t) => t.copyWith(status: UploadTaskStatus.processing, fileId: record.id));
+      // Non-image uploads aren't attached to a message — they've been
+      // handed off to the server (chunking+embedding, or queued for
+      // transcription) — so the chip's job is done; clear it shortly.
+      Future.delayed(const Duration(seconds: 2), () {
+        if (!mounted) return;
+        setState(() => _uploadTasks = _uploadTasks.where((t) => t.id != taskId).toList());
+      });
     } catch (e) {
-      _showError('Upload failed: $e');
+      updateTask((t) => t.copyWith(status: UploadTaskStatus.failed, errorMessage: _cleanError(e)));
     }
   }
 
-  void _handleRemoveStagedImage(int index) {
-    setState(() {
-      _stagedImages = [..._stagedImages]..removeAt(index);
-    });
+  Future<String?> _promptForTag() async {
+    final controller = TextEditingController();
+    final tag = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Tag this document? (optional)'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: 'e.g. Siemens, GE, X-ray'),
+          onSubmitted: (value) => Navigator.of(context).pop(value),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Skip')),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(controller.text),
+            child: const Text('Add tag'),
+          ),
+        ],
+      ),
+    );
+    if (tag == null || tag.trim().isEmpty) return null;
+    return tag.trim();
+  }
+
+  String _cleanError(Object e) => e.toString().replaceFirst('Exception: ', '');
+
+  void _handleRemoveUploadTask(String taskId) {
+    setState(() => _uploadTasks = _uploadTasks.where((t) => t.id != taskId).toList());
+  }
+
+  void _handleAskAboutSelection(String selectedText) {
+    final quoted = selectedText.split('\n').map((l) => '> $l').join('\n');
+    _composerController.text = '$quoted\n';
+    _composerController.selection = TextSelection.collapsed(offset: _composerController.text.length);
+    _composerFocusNode.requestFocus();
+  }
+
+  Future<void> _handleRename() async {
+    final conversation = _conversation;
+    if (conversation == null) return;
+    final controller = TextEditingController(text: conversation.title ?? '');
+    final newTitle = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Rename chat'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: 'Chat name'),
+          onSubmitted: (value) => Navigator.of(context).pop(value),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(controller.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    if (newTitle == null || newTitle.trim().isEmpty) return;
+    try {
+      await _service.updateConversationTitle(conversation.id, newTitle.trim());
+      if (mounted) {
+        setState(() {
+          _conversation = Conversation(
+            id: conversation.id,
+            title: newTitle.trim(),
+            createdAt: conversation.createdAt,
+            lastMessageAt: conversation.lastMessageAt,
+          );
+        });
+      }
+    } catch (e) {
+      _showError('Could not rename chat: $e');
+    }
+  }
+
+  Future<void> _handleExport() async {
+    final conversation = _conversation;
+    if (conversation == null) return;
+    try {
+      await ExportService.instance.exportConversation(conversation, _messages);
+    } catch (e) {
+      _showError('Could not export chat: $e');
+    }
   }
 
   void _showError(String message) {
@@ -241,6 +371,8 @@ class _ChatScreenState extends State<ChatScreen> {
     _outbox.removeListener(_onOutboxChanged);
     _sub?.cancel();
     _scrollController.dispose();
+    _composerController.dispose();
+    _composerFocusNode.dispose();
     super.dispose();
   }
 
@@ -248,7 +380,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Medical Engineer Assistant'),
+        title: Text(_conversation?.title ?? 'Medical Engineer Assistant'),
         actions: [
           IconButton(
             icon: const Icon(Icons.history, color: AppColors.neutralIcon),
@@ -260,6 +392,17 @@ class _ChatScreenState extends State<ChatScreen> {
             tooltip: 'New chat',
             onPressed: _handleNewChat,
           ),
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert, color: AppColors.neutralIcon),
+            onSelected: (value) {
+              if (value == 'rename') _handleRename();
+              if (value == 'export') _handleExport();
+            },
+            itemBuilder: (context) => const [
+              PopupMenuItem(value: 'rename', child: Text('Rename chat')),
+              PopupMenuItem(value: 'export', child: Text('Export chat')),
+            ],
+          ),
         ],
       ),
       body: SafeArea(
@@ -267,10 +410,12 @@ class _ChatScreenState extends State<ChatScreen> {
           children: [
             Expanded(child: _buildBody()),
             ChatComposer(
+              controller: _composerController,
+              focusNode: _composerFocusNode,
               onSend: _handleSend,
               onAttach: _handleAttach,
-              stagedImages: _stagedImages,
-              onRemoveStagedImage: _handleRemoveStagedImage,
+              uploadTasks: _uploadTasks,
+              onRemoveUploadTask: _handleRemoveUploadTask,
             ),
           ],
         ),
@@ -313,6 +458,7 @@ class _ChatScreenState extends State<ChatScreen> {
             content: row.confirmed!.content,
             isAgent: row.confirmed!.role == MessageRole.agent,
             attachmentFileIds: row.confirmed!.attachmentFileIds,
+            onAskAboutSelection: _handleAskAboutSelection,
           );
         }
         final pending = row.pending!;

@@ -41,6 +41,9 @@ class FileRecord {
   // Admin-only visual (this is the single-user app, so it's fine to show for
   // now) — never surfaced anywhere in the chat UI itself.
   final bool verified;
+  // Light, freeform label (e.g. brand/device type) set at upload time —
+  // used for Library filtering, not a folder hierarchy.
+  final String? tag;
 
   FileRecord({
     required this.id,
@@ -53,6 +56,7 @@ class FileRecord {
     required this.processingStatus,
     required this.uploadedAt,
     this.verified = false,
+    this.tag,
   });
 
   factory FileRecord.fromJson(Map<String, dynamic> json) {
@@ -67,6 +71,7 @@ class FileRecord {
       processingStatus: processingStatusFromString(json['processing_status'] as String),
       uploadedAt: DateTime.parse(json['uploaded_at'] as String),
       verified: (json['verification_status'] as String? ?? 'unverified') == 'verified',
+      tag: json['tag'] as String?,
     );
   }
 }

@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'package:dio/dio.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../config.dart';
@@ -50,6 +51,10 @@ class SupabaseService {
   Future<Conversation?> getConversation(String id) async {
     final row = await _client.from('conversations').select().eq('id', id).maybeSingle();
     return row == null ? null : Conversation.fromJson(row);
+  }
+
+  Future<void> updateConversationTitle(String id, String title) async {
+    await _client.from('conversations').update({'title': title}).eq('id', id);
   }
 
   /// Past conversations, most recently active first, for the "switch chat"
@@ -144,6 +149,18 @@ class SupabaseService {
     return rows.map((row) => FileRecord.fromJson(row)).toList();
   }
 
+  /// Live version of [getFiles] — the Library screen uses this so a
+  /// document's status (queued -> processing -> completed/failed) updates
+  /// on screen by itself, which matters most during a large bulk import
+  /// where processing happens well after the upload call returns.
+  Stream<List<FileRecord>> watchFiles({LibraryFileType? filterType}) {
+    final base = _client.from('files').stream(primaryKey: ['id']);
+    final filtered = filterType == null ? base : base.eq('file_type', filterType.name);
+    return filtered
+        .order('uploaded_at', ascending: false)
+        .map((rows) => rows.map((row) => FileRecord.fromJson(row)).toList());
+  }
+
   /// Downloads a file's raw bytes by its `files.id`, for rendering image
   /// attachments (see ImageCacheService). Returns null if the file record
   /// or the underlying storage object is missing.
@@ -157,21 +174,41 @@ class SupabaseService {
     return _client.storage.from('uploads').download(row['storage_path'] as String);
   }
 
-  Future<FileRecord> uploadFile({
+  /// Uploads with real progress (via dio, which — unlike the plain Storage
+  /// client's uploadBinary — reports actual bytes-sent) and surfaces the
+  /// real failure reason on error instead of a generic message: Supabase
+  /// Storage returns a JSON body describing exactly what went wrong (e.g.
+  /// "The object exceeded the maximum allowed size"), which a bare
+  /// exception's toString() would otherwise bury or drop.
+  Future<FileRecord> uploadFileWithProgress({
     required String conversationId,
     required String filename,
     required Uint8List bytes,
     required String mimeType,
     required LibraryFileType fileType,
+    String? tag,
+    void Function(double progress)? onProgress,
   }) async {
-    final storagePath =
-        '${fileType.name}/${DateTime.now().millisecondsSinceEpoch}_$filename';
+    final storagePath = '${fileType.name}/${DateTime.now().millisecondsSinceEpoch}_$filename';
 
-    await _client.storage.from('uploads').uploadBinary(
-          storagePath,
-          bytes,
-          fileOptions: FileOptions(contentType: mimeType, upsert: false),
-        );
+    try {
+      await Dio().post<void>(
+        '${AppConfig.supabaseUrl}/storage/v1/object/uploads/$storagePath',
+        data: bytes,
+        options: Options(
+          headers: {
+            'Authorization': 'Bearer ${AppConfig.supabaseAnonKey}',
+            'apikey': AppConfig.supabaseAnonKey,
+            'Content-Type': mimeType,
+          },
+        ),
+        onSendProgress: (sent, total) {
+          if (total > 0) onProgress?.call(sent / total);
+        },
+      );
+    } on DioException catch (e) {
+      throw Exception(_describeUploadError(e));
+    }
 
     final row = await _client
         .from('files')
@@ -182,12 +219,25 @@ class SupabaseService {
           'storage_path': storagePath,
           'mime_type': mimeType,
           'size_bytes': bytes.length,
-          'processing_status': fileType == LibraryFileType.document ? 'pending' : 'pending',
+          'tag': tag,
+          'processing_status': 'pending',
         })
         .select()
         .single();
 
     return FileRecord.fromJson(row);
+  }
+
+  String _describeUploadError(DioException e) {
+    final response = e.response;
+    if (response != null) {
+      final data = response.data;
+      if (data is Map && data['message'] is String) {
+        return data['message'] as String;
+      }
+      return 'Upload failed (HTTP ${response.statusCode}): ${response.statusMessage ?? data}';
+    }
+    return e.message ?? 'Upload failed: ${e.type.name}';
   }
 
   /// Kicks off server-side processing for a freshly uploaded file

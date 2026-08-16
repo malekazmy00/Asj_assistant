@@ -2,11 +2,11 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../models/file_record.dart';
+import '../models/upload_task.dart';
 import '../theme/app_theme.dart';
 import '../theme/responsive.dart';
-import 'image_thumbnail.dart';
 
-/// Message input row: staged-image strip (if any) + text field + attach
+/// Message input row: upload-task strip (if any) + text field + attach
 /// button + send button.
 ///
 /// Sending is fire-and-forget into the local outbox (see OutboxService), so
@@ -15,15 +15,23 @@ import 'image_thumbnail.dart';
 class ChatComposer extends StatefulWidget {
   final void Function(String text) onSend;
   final void Function(PlatformFile file) onAttach;
-  final List<FileRecord> stagedImages;
-  final void Function(int index) onRemoveStagedImage;
+  final List<UploadTask> uploadTasks;
+  final void Function(String taskId) onRemoveUploadTask;
+
+  /// Owned by the caller when given (e.g. ChatScreen, so "Ask about this"
+  /// on a message can prefill and focus this field) — otherwise this
+  /// widget manages its own, as before.
+  final TextEditingController? controller;
+  final FocusNode? focusNode;
 
   const ChatComposer({
     super.key,
     required this.onSend,
     required this.onAttach,
-    this.stagedImages = const [],
-    required this.onRemoveStagedImage,
+    this.uploadTasks = const [],
+    required this.onRemoveUploadTask,
+    this.controller,
+    this.focusNode,
   });
 
   @override
@@ -31,7 +39,14 @@ class ChatComposer extends StatefulWidget {
 }
 
 class _ChatComposerState extends State<ChatComposer> {
-  final _controller = TextEditingController();
+  TextEditingController? _ownedController;
+  TextEditingController get _controller => widget.controller ?? (_ownedController ??= TextEditingController());
+
+  @override
+  void dispose() {
+    _ownedController?.dispose();
+    super.dispose();
+  }
 
   Future<void> _pickAttachment() async {
     final file = await FilePicker.pickFile(
@@ -72,7 +87,7 @@ class _ChatComposerState extends State<ChatComposer> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (widget.stagedImages.isNotEmpty) _buildStagedStrip(context),
+            if (widget.uploadTasks.isNotEmpty) _buildUploadStrip(context),
             Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
@@ -84,6 +99,7 @@ class _ChatComposerState extends State<ChatComposer> {
                 Expanded(
                   child: TextField(
                     controller: _controller,
+                    focusNode: widget.focusNode,
                     minLines: 1,
                     maxLines: 5,
                     textCapitalization: TextCapitalization.sentences,
@@ -106,36 +122,127 @@ class _ChatComposerState extends State<ChatComposer> {
     );
   }
 
-  Widget _buildStagedStrip(BuildContext context) {
+  Widget _buildUploadStrip(BuildContext context) {
     final s = context.s;
     return SizedBox(
       height: s(68),
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-        itemCount: widget.stagedImages.length,
+        itemCount: widget.uploadTasks.length,
         separatorBuilder: (_, _) => SizedBox(width: s(6)),
         itemBuilder: (context, index) {
-          final file = widget.stagedImages[index];
-          return Stack(
-            clipBehavior: Clip.none,
-            children: [
-              ImageThumbnail(fileId: file.id, size: s(60)),
-              Positioned(
-                top: -6,
-                right: -6,
-                child: GestureDetector(
-                  onTap: () => widget.onRemoveStagedImage(index),
-                  child: CircleAvatar(
-                    radius: 10,
-                    backgroundColor: AppColors.text.withValues(alpha: 0.8),
-                    child: const Icon(Icons.close, size: 13, color: AppColors.background),
-                  ),
-                ),
-              ),
-            ],
+          final task = widget.uploadTasks[index];
+          return _UploadTaskChip(
+            task: task,
+            size: s(60),
+            onRemove: () => widget.onRemoveUploadTask(task.id),
           );
         },
+      ),
+    );
+  }
+}
+
+class _UploadTaskChip extends StatelessWidget {
+  final UploadTask task;
+  final double size;
+  final VoidCallback onRemove;
+
+  const _UploadTaskChip({required this.task, required this.size, required this.onRemove});
+
+  IconData get _icon {
+    switch (task.fileType) {
+      case LibraryFileType.audio:
+        return Icons.audiotrack;
+      case LibraryFileType.video:
+        return Icons.videocam;
+      case LibraryFileType.document:
+        return Icons.description;
+      case LibraryFileType.image:
+        return Icons.image;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: task.status == UploadTaskStatus.failed
+          ? () => showDialog<void>(
+                context: context,
+                builder: (context) => AlertDialog(
+                  title: Text('Couldn\'t upload "${task.filename}"'),
+                  content: Text(task.errorMessage ?? 'Unknown error'),
+                  actions: [
+                    TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('OK')),
+                  ],
+                ),
+              )
+          : null,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Container(
+            width: size,
+            height: size,
+            decoration: BoxDecoration(
+              color: AppColors.surface,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: task.status == UploadTaskStatus.failed ? Colors.red.shade300 : AppColors.border,
+              ),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                if (task.previewBytes != null)
+                  Image.memory(task.previewBytes!, fit: BoxFit.cover)
+                else
+                  Center(child: Icon(_icon, color: AppColors.neutralIcon, size: size * 0.4)),
+                if (task.status == UploadTaskStatus.uploading || task.status == UploadTaskStatus.processing)
+                  Container(
+                    color: Colors.black.withValues(alpha: 0.45),
+                    child: Center(
+                      child: task.status == UploadTaskStatus.processing
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                            )
+                          : Text(
+                              '${(task.progress * 100).round()}%',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                    ),
+                  ),
+                if (task.status == UploadTaskStatus.failed)
+                  Container(
+                    color: Colors.red.withValues(alpha: 0.5),
+                    child: const Center(
+                      child: Icon(Icons.error_outline, color: Colors.white, size: 22),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          Positioned(
+            top: -6,
+            right: -6,
+            child: GestureDetector(
+              onTap: onRemove,
+              child: CircleAvatar(
+                radius: 10,
+                backgroundColor: AppColors.text.withValues(alpha: 0.8),
+                child: const Icon(Icons.close, size: 13, color: AppColors.background),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

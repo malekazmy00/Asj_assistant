@@ -73,15 +73,25 @@ class LibraryRow extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  file.filename,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontWeight: FontWeight.w600,
-                    fontSize: s(15),
-                    color: AppColors.text,
-                  ),
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        file.filename,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontWeight: FontWeight.w600,
+                          fontSize: s(15),
+                          color: AppColors.text,
+                        ),
+                      ),
+                    ),
+                    if (file.tag != null) ...[
+                      SizedBox(width: s(6)),
+                      _TagPill(tag: file.tag!),
+                    ],
+                  ],
                 ),
                 SizedBox(height: s(2)),
                 Row(
@@ -102,6 +112,28 @@ class LibraryRow extends StatelessWidget {
           ),
           _VerifiedBadge(verified: file.verified),
         ],
+      ),
+    );
+  }
+}
+
+class _TagPill extends StatelessWidget {
+  final String tag;
+  const _TagPill({required this.tag});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      decoration: BoxDecoration(
+        color: AppColors.userBubbleBackground,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(
+        tag,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(fontSize: 11, color: AppColors.medicalBlue, fontWeight: FontWeight.w600),
       ),
     );
   }

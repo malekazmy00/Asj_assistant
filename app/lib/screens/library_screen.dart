@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
@@ -17,30 +19,64 @@ class _LibraryScreenState extends State<LibraryScreen> {
   final _service = SupabaseService.instance;
 
   LibraryFileType? _filter;
+  String? _tagFilter;
   List<FileRecord> _files = [];
   bool _loading = true;
   String? _error;
+  StreamSubscription<List<FileRecord>>? _sub;
+
+  /// Tags present in the current type-filtered list, for the secondary
+  /// filter row — derived client-side rather than a separate query, since
+  /// tagging is a light, freeform label, not a real taxonomy.
+  List<String> get _availableTags {
+    final tags = _files.map((f) => f.tag).whereType<String>().toSet().toList();
+    tags.sort();
+    return tags;
+  }
+
+  List<FileRecord> get _visibleFiles {
+    if (_tagFilter == null) return _files;
+    return _files.where((f) => f.tag == _tagFilter).toList();
+  }
 
   @override
   void initState() {
     super.initState();
-    _load();
+    _subscribe();
   }
 
-  Future<void> _load() async {
+  void _subscribe() {
+    _sub?.cancel();
     setState(() => _loading = true);
-    try {
-      final files = await _service.getFiles(filterType: _filter);
-      setState(() {
-        _files = files;
-        _loading = false;
-      });
-    } catch (e) {
-      setState(() {
-        _error = 'Could not load library: $e';
-        _loading = false;
-      });
-    }
+    _sub = _service.watchFiles(filterType: _filter).listen(
+      (files) {
+        if (!mounted) return;
+        setState(() {
+          _files = files;
+          _loading = false;
+          _error = null;
+          // A tag that no longer appears under the current type filter (or
+          // was never a real tag) shouldn't silently keep filtering to
+          // nothing.
+          if (_tagFilter != null && !files.any((f) => f.tag == _tagFilter)) {
+            _tagFilter = null;
+          }
+        });
+      },
+      onError: (Object e) {
+        if (!mounted) return;
+        setState(() {
+          _error = 'Could not load library: $e';
+          _loading = false;
+        });
+      },
+    );
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
   }
 
   Map<String, List<FileRecord>> _groupByDate(List<FileRecord> files) {
@@ -54,7 +90,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final grouped = _groupByDate(_files);
+    final grouped = _groupByDate(_visibleFiles);
 
     return Scaffold(
       appBar: AppBar(title: const Text('Library')),
@@ -62,9 +98,40 @@ class _LibraryScreenState extends State<LibraryScreen> {
         child: Column(
           children: [
             _buildFilterBar(),
+            if (_availableTags.isNotEmpty) _buildTagFilterBar(),
             const Divider(height: kBorderWidth),
             Expanded(child: _buildBody(grouped)),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTagFilterBar() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [null, ..._availableTags].map((tag) {
+            final selected = _tagFilter == tag;
+            return Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: ChoiceChip(
+                label: Text(tag ?? 'All tags'),
+                selected: selected,
+                onSelected: (_) => setState(() => _tagFilter = tag),
+                selectedColor: AppColors.userBubbleBackground,
+                labelStyle: TextStyle(
+                  color: selected ? AppColors.medicalBlue : AppColors.mutedText(0.6),
+                  fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                  fontSize: 13,
+                ),
+                side: BorderSide(color: AppColors.border, width: selected ? kBorderWidth : 1),
+                backgroundColor: AppColors.surface,
+              ),
+            );
+          }).toList(),
         ),
       ),
     );
@@ -93,8 +160,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
               label: Text(label),
               selected: selected,
               onSelected: (_) {
-                setState(() => _filter = type);
-                _load();
+                _filter = type;
+                _subscribe();
               },
               selectedColor: AppColors.border.withValues(alpha: 0.55),
               labelStyle: TextStyle(
@@ -126,27 +193,27 @@ class _LibraryScreenState extends State<LibraryScreen> {
         child: Text('No uploads yet.', style: TextStyle(color: AppColors.mutedText(0.6))),
       );
     }
-    return RefreshIndicator(
-      onRefresh: _load,
-      child: ListView(
-        children: grouped.entries.expand((entry) {
-          return [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
-              child: Text(
-                entry.key,
-                style: TextStyle(fontWeight: FontWeight.w700, color: AppColors.mutedText(0.6)),
-              ),
+    // No pull-to-refresh needed — watchFiles() is a live Realtime
+    // subscription, so status changes (queued -> processing -> done) and
+    // new uploads appear on their own.
+    return ListView(
+      children: grouped.entries.expand((entry) {
+        return [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+            child: Text(
+              entry.key,
+              style: TextStyle(fontWeight: FontWeight.w700, color: AppColors.mutedText(0.6)),
             ),
-            ...entry.value.map((file) => Column(
-                  children: [
-                    LibraryRow(file: file),
-                    const Divider(height: kBorderWidth, indent: 16, endIndent: 16),
-                  ],
-                )),
-          ];
-        }).toList(),
-      ),
+          ),
+          ...entry.value.map((file) => Column(
+                children: [
+                  LibraryRow(file: file),
+                  const Divider(height: kBorderWidth, indent: 16, endIndent: 16),
+                ],
+              )),
+        ];
+      }).toList(),
     );
   }
 }

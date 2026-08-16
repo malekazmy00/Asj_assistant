@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 
 import '../theme/app_theme.dart';
 import '../theme/responsive.dart';
 import 'image_thumbnail.dart';
+import 'rich_message_text.dart';
 
 enum BubbleDeliveryStatus { sent, sending, failed }
 
@@ -13,6 +15,11 @@ class MessageBubble extends StatelessWidget {
   final BubbleDeliveryStatus status;
   final VoidCallback? onRetry;
 
+  /// Called with the selected text when the user picks "Ask about this"
+  /// from the selection toolbar. Selecting text also gets the platform's
+  /// normal Copy for free via the same toolbar.
+  final void Function(String selectedText)? onAskAboutSelection;
+
   const MessageBubble({
     super.key,
     required this.content,
@@ -20,7 +27,16 @@ class MessageBubble extends StatelessWidget {
     this.attachmentFileIds = const [],
     this.status = BubbleDeliveryStatus.sent,
     this.onRetry,
+    this.onAskAboutSelection,
   });
+
+  Widget _buildSelectableContent(TextStyle textStyle) {
+    return _SelectableMessageContent(
+      fullContent: content,
+      onAskAboutSelection: onAskAboutSelection,
+      child: RichMessageText(content: content, style: textStyle),
+    );
+  }
 
   void _openFullscreen(BuildContext context, String fileId) {
     showDialog(
@@ -85,9 +101,8 @@ class MessageBubble extends StatelessWidget {
             if (hasText)
               Padding(
                 padding: EdgeInsets.symmetric(horizontal: s(8), vertical: s(4)),
-                child: Text(
-                  content,
-                  style: TextStyle(color: AppColors.bubbleText, fontSize: s(15), height: 1.35),
+                child: _buildSelectableContent(
+                  TextStyle(color: AppColors.bubbleText, fontSize: s(15), height: 1.35),
                 ),
               ),
             if (status != BubbleDeliveryStatus.sent) ...[
@@ -112,6 +127,68 @@ class MessageBubble extends StatelessWidget {
         mainAxisAlignment: isAgent ? MainAxisAlignment.start : MainAxisAlignment.end,
         children: [tappable],
       ),
+    );
+  }
+}
+
+/// Wraps message text in a [SelectionArea] and adds "Copy message" (the
+/// whole thing, one tap, no need to select-all first) and, when a callback
+/// is given, "Ask about this" for whatever's currently selected — both
+/// alongside the platform's normal Copy/Select all in the same toolbar, so
+/// there's one consistent long-press-to-act interaction rather than a
+/// separate gesture competing with text selection. [SelectableRegionState]
+/// doesn't expose the current selection directly to a context-menu
+/// builder, so this widget tracks it itself via
+/// [SelectionArea.onSelectionChanged].
+class _SelectableMessageContent extends StatefulWidget {
+  final Widget child;
+  final String fullContent;
+  final void Function(String selectedText)? onAskAboutSelection;
+
+  const _SelectableMessageContent({
+    required this.child,
+    required this.fullContent,
+    this.onAskAboutSelection,
+  });
+
+  @override
+  State<_SelectableMessageContent> createState() => _SelectableMessageContentState();
+}
+
+class _SelectableMessageContentState extends State<_SelectableMessageContent> {
+  String _selectedText = '';
+
+  @override
+  Widget build(BuildContext context) {
+    return SelectionArea(
+      onSelectionChanged: (content) => _selectedText = content?.plainText.trim() ?? '',
+      contextMenuBuilder: (context, selectableRegionState) {
+        final items = <ContextMenuButtonItem>[
+          ...selectableRegionState.contextMenuButtonItems,
+          ContextMenuButtonItem(
+            label: 'Copy message',
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: widget.fullContent));
+              selectableRegionState.hideToolbar();
+              selectableRegionState.clearSelection();
+            },
+          ),
+          if (widget.onAskAboutSelection != null && _selectedText.isNotEmpty)
+            ContextMenuButtonItem(
+              label: 'Ask about this',
+              onPressed: () {
+                widget.onAskAboutSelection!(_selectedText);
+                selectableRegionState.hideToolbar();
+                selectableRegionState.clearSelection();
+              },
+            ),
+        ];
+        return AdaptiveTextSelectionToolbar.buttonItems(
+          anchors: selectableRegionState.contextMenuAnchors,
+          buttonItems: items,
+        );
+      },
+      child: widget.child,
     );
   }
 }
