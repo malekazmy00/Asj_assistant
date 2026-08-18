@@ -59,6 +59,17 @@ dev_dependencies:
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
 
+# TEMPORARY, until an upstream speech_to_text release fixes this: a locally
+# patched fork (see ../third_party/speech_to_text/PATCH_NOTES.md) of the
+# Android native startListening() call, which crashed the whole app
+# uncatchably on some OEM devices (SecurityException binding to a
+# restricted speech-recognition service — confirmed via error_logs on a
+# real device, not guessed). Remove this override once that's fixed
+# upstream.
+dependency_overrides:
+  speech_to_text:
+    path: ../third_party/speech_to_text
+
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
 
