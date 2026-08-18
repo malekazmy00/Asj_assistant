@@ -1,5 +1,6 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:speech_to_text/speech_to_text.dart';
 
 import '../models/file_record.dart';
 import '../models/upload_task.dart';
@@ -42,10 +43,65 @@ class _ChatComposerState extends State<ChatComposer> {
   TextEditingController? _ownedController;
   TextEditingController get _controller => widget.controller ?? (_ownedController ??= TextEditingController());
 
+  // Voice input: on-device speech-to-text as a typing alternative — no
+  // audio ever leaves the device, no cloud round trip, no dedicated chat.
+  // Distinct from uploading a call recording (attach button): single
+  // utterance, transcribed locally, just lands in the text field like
+  // typing would. The recognized text is cumulative per listening
+  // session, so it replaces (rather than appends to) whatever was already
+  // typed before this session started — _textBeforeListening is what it's
+  // laid back on top of.
+  final SpeechToText _speech = SpeechToText();
+  bool _speechInitialized = false;
+  bool _isListening = false;
+  String _textBeforeListening = '';
+
   @override
   void dispose() {
+    _speech.stop();
     _ownedController?.dispose();
     super.dispose();
+  }
+
+  Future<void> _toggleListening() async {
+    if (_isListening) {
+      await _speech.stop();
+      if (mounted) setState(() => _isListening = false);
+      return;
+    }
+
+    if (!_speechInitialized) {
+      _speechInitialized = await _speech.initialize(
+        onError: (e) => _showSpeechError('Voice input error: ${e.errorMsg}'),
+        onStatus: (status) {
+          if ((status == 'notListening' || status == 'done') && mounted) {
+            setState(() => _isListening = false);
+          }
+        },
+      );
+    }
+    if (!_speechInitialized) {
+      _showSpeechError("Couldn't start voice input — check the microphone permission for this app.");
+      return;
+    }
+
+    _textBeforeListening = _controller.text;
+    setState(() => _isListening = true);
+    await _speech.listen(
+      onResult: (result) {
+        final joined = _textBeforeListening.isEmpty
+            ? result.recognizedWords
+            : '$_textBeforeListening ${result.recognizedWords}';
+        _controller.text = joined;
+        _controller.selection = TextSelection.collapsed(offset: joined.length);
+      },
+    );
+  }
+
+  void _showSpeechError(String message) {
+    if (!mounted) return;
+    setState(() => _isListening = false);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
   Future<void> _pickAttachment() async {
@@ -68,6 +124,10 @@ class _ChatComposerState extends State<ChatComposer> {
   }
 
   void _submit() {
+    if (_isListening) {
+      _speech.stop();
+      setState(() => _isListening = false);
+    }
     final text = _controller.text.trim();
     widget.onSend(text);
     _controller.clear();
@@ -104,9 +164,20 @@ class _ChatComposerState extends State<ChatComposer> {
                     maxLines: 5,
                     textCapitalization: TextCapitalization.sentences,
                     style: TextStyle(color: AppColors.text, fontSize: s(15)),
-                    decoration: const InputDecoration(hintText: 'Message'),
+                    decoration: InputDecoration(
+                      hintText: _isListening ? 'Listening…' : 'Message',
+                    ),
                     onSubmitted: (_) => _submit(),
                   ),
+                ),
+                IconButton(
+                  icon: Icon(
+                    _isListening ? Icons.mic : Icons.mic_none,
+                    color: _isListening ? AppColors.medicalBlue : AppColors.neutralIcon,
+                    size: s(24),
+                  ),
+                  onPressed: _toggleListening,
+                  tooltip: _isListening ? 'Stop voice input' : 'Voice input',
                 ),
                 SizedBox(width: s(4)),
                 IconButton(

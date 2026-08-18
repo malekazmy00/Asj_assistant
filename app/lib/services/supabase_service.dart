@@ -57,6 +57,17 @@ class SupabaseService {
     await _client.from('conversations').update({'title': title}).eq('id', id);
   }
 
+  /// Marks [conversationId] as having been created *for* [fileId] — used
+  /// only for call recordings, which get their own dedicated chat (see
+  /// ChatScreen._handleAttach). The backend uses this to know when it's
+  /// safe to post an opening message once that recording's transcript is
+  /// ready (see process-file's recording_kickoff helper), and never does
+  /// so for an ordinary conversation that just happens to have a file
+  /// attached partway through.
+  Future<void> setConversationSeedFile(String conversationId, String fileId) async {
+    await _client.from('conversations').update({'seed_file_id': fileId}).eq('id', conversationId);
+  }
+
   /// Past conversations, most recently active first, for the "switch chat"
   /// list. Conversations with no messages yet sort last (nulls last).
   Future<List<Conversation>> getConversations() async {

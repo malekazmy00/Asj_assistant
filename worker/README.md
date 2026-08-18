@@ -1,4 +1,17 @@
-# WhisperX worker
+# WhisperX worker (superseded)
+
+**This worker is no longer used.** Audio/video transcription now runs via
+Gemini's native audio understanding directly inside the `process-file` Edge
+Function (see `supabase/functions/_shared/gemini_transcribe.ts`) — a plain
+HTTPS call needs no separate persistent server, so there's no polling
+worker to deploy or keep running anymore. This directory is kept only as a
+reference/fallback in case Gemini transcription quality or cost ever makes
+switching back to a real WhisperX pipeline worthwhile; it is not part of
+the current deployment.
+
+Everything below describes how this worker used to work, before that change.
+
+---
 
 Polls Supabase for queued audio/video uploads and transcribes them. This is
 the only piece of Medical Engineer Assistant that needs a persistent server

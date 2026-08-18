@@ -3,21 +3,26 @@
 // see worker/bulk_import_from_drive.py).
 //
 // - documents: download from Storage, extract text, chunk it, embed each
-//   chunk, mark the file completed (or failed with a reason). This runs in
-//   the background (EdgeRuntime.waitUntil) rather than blocking the
-//   response — a large scanned manual can take a while, and a slow
-//   response here shouldn't risk a request timeout for one file or stall a
-//   bulk-import script processing thousands of them.
-// - audio/video: nothing to do here — they stay `pending` and are picked up
-//   by the separate WhisperX worker (see /worker), which owns transcription.
-// - images: nothing to do here either — no OCR/chunking step. Images go
-//   straight to Claude's native vision input when attached to a chat
-//   message (see chat/index.ts), so they're marked completed immediately
-//   (the Flutter client actually does this at upload time and doesn't call
-//   this function for images at all — this branch exists as a safety net).
+//   chunk, mark the file completed (or failed with a reason).
+// - audio/video: download from Storage, transcribe via Gemini (native audio
+//   understanding — see _shared/gemini_transcribe.ts), store speaker-
+//   labelled segments, embed each one. This replaces the old WhisperX
+//   worker (see worker/README.md) — a plain HTTPS call needs no separate
+//   persistent server, so it fits right into this same function instead of
+//   a polling job elsewhere.
+// - images: nothing to do here — no OCR/chunking step. Images go straight
+//   to Claude's native vision input when attached to a chat message (see
+//   chat/index.ts), so they're marked completed immediately (the Flutter
+//   client actually does this at upload time and doesn't call this
+//   function for images at all — this branch exists as a safety net).
+//
+// All of the above runs in the background (EdgeRuntime.waitUntil) rather
+// than blocking the response — a large manual or a long call recording can
+// take a while, and a slow response here shouldn't risk a request timeout
+// for one file or stall a bulk-import script processing thousands of them.
 //
 // Failure isolation: each call operates on exactly one file_id and only
-// ever touches that file's own row — one bad/corrupt PDF marks itself
+// ever touches that file's own row — one bad/corrupt file marks itself
 // `failed` with a reason and cannot affect any other file's processing,
 // which is what makes it safe to fire this at a large batch of files and
 // just retry the individual failures.
@@ -27,6 +32,8 @@ import { corsHeaders, handleOptions, jsonResponse } from "../_shared/cors.ts";
 import { embed, toPgVector } from "../_shared/embeddings.ts";
 import { extractText } from "../_shared/extract_text.ts";
 import { chunkText } from "../_shared/chunk_text.ts";
+import { transcribeWithGemini } from "../_shared/gemini_transcribe.ts";
+import { maybePostRecordingKickoff } from "../_shared/recording_kickoff.ts";
 
 // deno-lint-ignore no-explicit-any
 declare const EdgeRuntime: any;
@@ -63,14 +70,15 @@ Deno.serve(async (req) => {
       return jsonResponse({ status: "completed" });
     }
 
-    if (file.file_type !== "document") {
-      // Audio/video: leave as `pending` for the WhisperX worker to pick up.
-      return jsonResponse({ status: "queued_for_worker" });
+    if (file.file_type !== "document" && file.file_type !== "audio" && file.file_type !== "video") {
+      return jsonResponse({ error: `Unexpected file_type: ${file.file_type}` }, 400);
     }
 
     await supabase.from("files").update({ processing_status: "processing" }).eq("id", file_id);
 
-    const backgroundWork = processDocument(supabase, file);
+    const backgroundWork = file.file_type === "document"
+      ? processDocument(supabase, file)
+      : processAudioVideo(supabase, file);
     if (typeof EdgeRuntime !== "undefined") {
       EdgeRuntime.waitUntil(backgroundWork);
     } else {
@@ -137,5 +145,71 @@ async function processDocument(supabase: SupabaseClient, file: FileRow): Promise
         error_message: (processingError as Error).message ?? String(processingError),
       })
       .eq("id", file.id);
+  }
+}
+
+async function processAudioVideo(supabase: SupabaseClient, file: FileRow): Promise<void> {
+  try {
+    const { data: blob, error: downloadError } = await supabase.storage
+      .from("uploads")
+      .download(file.storage_path);
+    if (downloadError) throw downloadError;
+
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    const mimeType = file.mime_type || (file.file_type === "video" ? "video/mp4" : "audio/mpeg");
+    const segments = await transcribeWithGemini(bytes, mimeType, file.filename);
+
+    if (segments.length === 0) {
+      throw new Error("Gemini returned an empty transcript — the recording may be silent or unreadable.");
+    }
+
+    for (let i = 0; i < segments.length; i++) {
+      const seg = segments[i];
+      const { data: segmentRow, error: segmentError } = await supabase
+        .from("transcript_segments")
+        .insert({
+          file_id: file.id,
+          segment_index: i,
+          speaker_label: seg.speaker_label,
+          start_time: seg.start_time,
+          end_time: seg.end_time,
+          text: seg.text,
+          confidence: null, // Gemini doesn't expose a numeric score — low_confidence is its own flag
+          low_confidence: seg.low_confidence,
+        })
+        .select()
+        .single();
+      if (segmentError) throw segmentError;
+
+      try {
+        const vec = await embed(seg.text);
+        await supabase.from("embeddings").upsert({
+          source_type: "transcript_segment",
+          source_id: segmentRow.id,
+          content_preview: seg.text.slice(0, 2000),
+          embedding: toPgVector(vec),
+        }, { onConflict: "source_type,source_id" });
+      } catch (e) {
+        console.error(`Failed to embed transcript segment ${segmentRow.id}:`, e);
+      }
+    }
+
+    await supabase
+      .from("files")
+      .update({ processing_status: "completed", processed_at: new Date().toISOString() })
+      .eq("id", file.id);
+
+    await maybePostRecordingKickoff(supabase, file, { status: "completed", segments })
+      .catch((e) => console.error(`Recording kickoff failed for ${file.id} (non-fatal):`, e));
+  } catch (processingError) {
+    const message = (processingError as Error).message ?? String(processingError);
+    console.error(`process-file audio/video error for ${file.id}:`, processingError);
+    await supabase
+      .from("files")
+      .update({ processing_status: "failed", error_message: message })
+      .eq("id", file.id);
+
+    await maybePostRecordingKickoff(supabase, file, { status: "failed", errorMessage: message })
+      .catch((e) => console.error(`Recording kickoff failed for ${file.id} (non-fatal):`, e));
   }
 }

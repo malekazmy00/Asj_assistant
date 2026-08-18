@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/conversation.dart';
@@ -165,8 +166,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _handleAttach(PlatformFile file) async {
-    final conversation = _conversation;
-    if (conversation == null) return;
+    if (_conversation == null) return;
 
     final nameParts = file.name.split('.');
     final ext = nameParts.length > 1 ? nameParts.last.toLowerCase() : '';
@@ -179,6 +179,21 @@ class _ChatScreenState extends State<ChatScreen> {
     } catch (e) {
       _showError('Could not read ${file.name}: $e');
       return;
+    }
+
+    // Call recordings get their own dedicated chat rather than joining
+    // whatever's currently open — lets the agent focus fully on that one
+    // recording (asking about unclear parts, etc.) without competing with
+    // unrelated topics. Everything else (documents, images) still goes
+    // into the current conversation as before.
+    Conversation targetConversation;
+    final isRecording = fileType == LibraryFileType.audio || fileType == LibraryFileType.video;
+    if (isRecording) {
+      targetConversation = await _service.createConversation();
+      await _service.updateConversationTitle(targetConversation.id, _titleForRecording(file.name));
+      await _switchTo(targetConversation);
+    } else {
+      targetConversation = _conversation!;
     }
 
     // Documents get an optional light tag (brand/device type) at upload
@@ -207,7 +222,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
     try {
       final record = await _service.uploadFileWithProgress(
-        conversationId: conversation.id,
+        conversationId: targetConversation.id,
         filename: file.name,
         bytes: bytes,
         mimeType: mimeType,
@@ -215,6 +230,9 @@ class _ChatScreenState extends State<ChatScreen> {
         tag: tag,
         onProgress: (progress) => updateTask((t) => t.copyWith(progress: progress)),
       );
+      if (isRecording) {
+        await _service.setConversationSeedFile(targetConversation.id, record.id);
+      }
       unawaited(_service.triggerFileProcessing(record.id));
 
       if (fileType == LibraryFileType.image) {
@@ -237,6 +255,19 @@ class _ChatScreenState extends State<ChatScreen> {
     } catch (e) {
       updateTask((t) => t.copyWith(status: UploadTaskStatus.failed, errorMessage: _cleanError(e)));
     }
+  }
+
+  /// A first-pass title for a call recording's new dedicated chat — cleaned
+  /// up from the filename when that's actually informative, falling back
+  /// to the upload date otherwise (e.g. auto-named "REC0231.m4a" phone
+  /// recordings, or "audio_2026...".wav" style names). Always renamable
+  /// afterward via the existing rename feature.
+  String _titleForRecording(String filename) {
+    final base = filename.contains('.') ? filename.substring(0, filename.lastIndexOf('.')) : filename;
+    final cleaned = base.replaceAll(RegExp(r'[_\-]+'), ' ').trim();
+    final looksMeaningful = cleaned.isNotEmpty && RegExp(r'[a-zA-Z؀-ۿ]{3,}').hasMatch(cleaned);
+    if (looksMeaningful) return cleaned;
+    return 'Call recording — ${DateFormat.yMMMd().format(DateTime.now())}';
   }
 
   Future<String?> _promptForTag() async {
