@@ -70,32 +70,48 @@ class _ChatComposerState extends State<ChatComposer> {
       return;
     }
 
-    if (!_speechInitialized) {
-      _speechInitialized = await _speech.initialize(
-        onError: (e) => _showSpeechError('Voice input error: ${e.errorMsg}'),
-        onStatus: (status) {
-          if ((status == 'notListening' || status == 'done') && mounted) {
-            setState(() => _isListening = false);
-          }
+    try {
+      if (!_speechInitialized) {
+        _speechInitialized = await _speech.initialize(
+          onError: (e) => _showSpeechError('Voice input error: ${e.errorMsg}'),
+          onStatus: (status) {
+            if ((status == 'notListening' || status == 'done') && mounted) {
+              setState(() => _isListening = false);
+            }
+          },
+          // This app has no use for Bluetooth-headset mic input, and asking
+          // for it costs a second runtime permission (BLUETOOTH_CONNECT)
+          // that this app's manifest doesn't declare — requesting an
+          // undeclared dangerous permission is a real Android crash class
+          // on a number of OS/OEM combinations, which is exactly what was
+          // happening here. Opting out is the plugin's own documented fix
+          // for apps that don't need Bluetooth support.
+          options: [SpeechToText.androidNoBluetooth],
+        );
+      }
+      if (!_speechInitialized) {
+        _showSpeechError("Couldn't start voice input — check the microphone permission for this app.");
+        return;
+      }
+
+      _textBeforeListening = _controller.text;
+      setState(() => _isListening = true);
+      await _speech.listen(
+        onResult: (result) {
+          final joined = _textBeforeListening.isEmpty
+              ? result.recognizedWords
+              : '$_textBeforeListening ${result.recognizedWords}';
+          _controller.text = joined;
+          _controller.selection = TextSelection.collapsed(offset: joined.length);
         },
       );
+    } catch (e) {
+      // Defense in depth: any PlatformException from the plugin (native
+      // errors are supposed to come back this way, not as a crash) lands
+      // here as a graceful message instead of an uncaught exception out of
+      // a button handler.
+      _showSpeechError('Voice input error: $e');
     }
-    if (!_speechInitialized) {
-      _showSpeechError("Couldn't start voice input — check the microphone permission for this app.");
-      return;
-    }
-
-    _textBeforeListening = _controller.text;
-    setState(() => _isListening = true);
-    await _speech.listen(
-      onResult: (result) {
-        final joined = _textBeforeListening.isEmpty
-            ? result.recognizedWords
-            : '$_textBeforeListening ${result.recognizedWords}';
-        _controller.text = joined;
-        _controller.selection = TextSelection.collapsed(offset: joined.length);
-      },
-    );
   }
 
   void _showSpeechError(String message) {
