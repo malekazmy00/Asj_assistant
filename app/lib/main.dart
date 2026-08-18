@@ -5,65 +5,43 @@ import 'package:flutter/material.dart';
 import 'config.dart';
 import 'screens/chat_screen.dart';
 import 'screens/library_screen.dart';
+import 'services/error_log_service.dart';
 import 'services/outbox_service.dart';
 import 'services/supabase_service.dart';
 import 'theme/app_theme.dart';
 
-// ============================================================================
-// TEMPORARY DEBUG BUILD ONLY — remove this whole block (and the
-// navigatorKey wiring below) once the mic-button crash is confirmed
-// root-caused. There's no adb/device access to pull a real crash log
-// right now, so this catches any uncaught exception app-wide and shows it
-// in a dialog to screenshot, instead of the app just dying with no trace.
-// ============================================================================
-final debugNavigatorKey = GlobalKey<NavigatorState>();
-bool _showingDebugErrorDialog = false;
+/// Used only to show a lightweight, optional "something went wrong" banner
+/// after a Flutter-level crash gets logged — not needed for the logging
+/// itself, which doesn't require any UI.
+final appNavigatorKey = GlobalKey<NavigatorState>();
 
-void _showDebugErrorDialog(String title, Object error, StackTrace? stack) {
-  // showDialog during a build/layout/paint pass (which is exactly when
-  // FlutterError.onError fires) isn't safe — defer to the next frame.
+void _showRecoveredFromErrorBanner() {
   WidgetsBinding.instance.addPostFrameCallback((_) {
-    final context = debugNavigatorKey.currentContext;
-    if (context == null || _showingDebugErrorDialog) return;
-    _showingDebugErrorDialog = true;
-    showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(title),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: SingleChildScrollView(
-            child: SelectableText(
-              '$error\n\n${stack ?? '(no stack trace)'}',
-              style: const TextStyle(fontSize: 12, fontFamily: 'monospace'),
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              _showingDebugErrorDialog = false;
-              Navigator.of(dialogContext).pop();
-            },
-            child: const Text('Close'),
-          ),
-        ],
-      ),
+    final context = appNavigatorKey.currentContext;
+    if (context == null) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Something went wrong there — you can keep going.')),
     );
   });
 }
-// ============================================================================
-// End temporary debug block
-// ============================================================================
 
 Future<void> main() async {
-  // TEMPORARY (debug): route Flutter framework-level errors (widget build/
-  // layout/paint) to the dialog above instead of the default red screen.
+  // Flutter framework-level errors (widget build/layout/paint) — log to
+  // error_logs and show a soft "something went wrong" banner instead of
+  // the default red screen. Still calls the previous handler first so
+  // console output (visible in a debug build) is unaffected.
   final defaultOnError = FlutterError.onError;
   FlutterError.onError = (details) {
     defaultOnError?.call(details);
-    _showDebugErrorDialog('Flutter error', details.exception, details.stack);
+    unawaited(ErrorLogService.instance.logError(
+      level: 'fatal',
+      source: 'dart',
+      errorType: details.exception.runtimeType.toString(),
+      message: details.exception.toString(),
+      stackTrace: details.stack?.toString(),
+      screenOrAction: 'Flutter framework error',
+    ));
+    _showRecoveredFromErrorBanner();
   };
 
   // A platform plugin misbehaving on some specific device (e.g. a
@@ -77,11 +55,23 @@ Future<void> main() async {
       // App-wide, not screen-scoped: pending sends keep retrying on
       // reconnect even while the user is on the Library tab.
       await OutboxService.instance.init();
+      // Uploads (and clears) any crash file a native handler wrote during
+      // a previous run that ended in a crash the Dart side never saw —
+      // see MainActivity.kt / ErrorLogService.uploadPendingNativeCrashes.
+      unawaited(ErrorLogService.instance.uploadPendingNativeCrashes());
     }
     runApp(const MedicalEngineerAssistantApp());
   }, (error, stack) {
     debugPrint('Uncaught error: $error\n$stack');
-    _showDebugErrorDialog('Uncaught error', error, stack); // TEMPORARY (debug)
+    unawaited(ErrorLogService.instance.logError(
+      level: 'fatal',
+      source: 'dart',
+      errorType: error.runtimeType.toString(),
+      message: error.toString(),
+      stackTrace: stack.toString(),
+      screenOrAction: 'uncaught async error',
+    ));
+    _showRecoveredFromErrorBanner();
   });
 }
 
@@ -91,7 +81,7 @@ class MedicalEngineerAssistantApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      navigatorKey: debugNavigatorKey, // TEMPORARY (debug) — see block above
+      navigatorKey: appNavigatorKey,
       title: 'Medical Engineer Assistant',
       debugShowCheckedModeBanner: false,
       theme: buildAppTheme(),

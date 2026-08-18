@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
@@ -7,6 +8,7 @@ import '../config.dart';
 import '../models/conversation.dart';
 import '../models/file_record.dart';
 import '../models/message.dart';
+import 'error_log_service.dart';
 
 /// Thin wrapper around the Supabase client. The Flutter app talks to
 /// Supabase directly (anon key + permissive v1 RLS) for reading/writing
@@ -217,7 +219,18 @@ class SupabaseService {
           if (total > 0) onProgress?.call(sent / total);
         },
       );
-    } on DioException catch (e) {
+    } on DioException catch (e, stack) {
+      // Already surfaced to the user via the upload chip's error dialog
+      // (see chat_screen.dart) — logged too so upload failures are
+      // queryable in aggregate, not just visible one at a time on-device.
+      unawaited(ErrorLogService.instance.logError(
+        level: 'error',
+        source: 'dart',
+        errorType: e.runtimeType.toString(),
+        message: _describeUploadError(e),
+        stackTrace: stack.toString(),
+        screenOrAction: 'uploading a file ($filename)',
+      ));
       throw Exception(_describeUploadError(e));
     }
 

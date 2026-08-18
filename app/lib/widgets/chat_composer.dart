@@ -1,9 +1,13 @@
+import 'dart:async';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 
 import '../models/file_record.dart';
 import '../models/upload_task.dart';
+import '../services/error_log_service.dart';
+import '../services/native_bridge.dart';
 import '../theme/app_theme.dart';
 import '../theme/responsive.dart';
 
@@ -70,6 +74,11 @@ class _ChatComposerState extends State<ChatComposer> {
       return;
     }
 
+    // Best-effort: if the process dies right after this (native crash,
+    // outside anything Dart can catch), the crash record picks this up as
+    // screen_or_action — see NativeCrashReporter in MainActivity.kt.
+    unawaited(NativeBridge.instance.setLastAction('tapped mic button'));
+
     try {
       if (!_speechInitialized) {
         _speechInitialized = await _speech.initialize(
@@ -105,11 +114,19 @@ class _ChatComposerState extends State<ChatComposer> {
           _controller.selection = TextSelection.collapsed(offset: joined.length);
         },
       );
-    } catch (e) {
+    } catch (e, stack) {
       // Defense in depth: any PlatformException from the plugin (native
       // errors are supposed to come back this way, not as a crash) lands
       // here as a graceful message instead of an uncaught exception out of
       // a button handler.
+      unawaited(ErrorLogService.instance.logError(
+        level: 'error',
+        source: 'dart',
+        errorType: e.runtimeType.toString(),
+        message: e.toString(),
+        stackTrace: stack.toString(),
+        screenOrAction: 'voice input (mic button)',
+      ));
       _showSpeechError('Voice input error: $e');
     }
   }

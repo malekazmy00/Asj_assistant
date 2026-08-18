@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/pending_message.dart';
+import 'error_log_service.dart';
 import 'supabase_service.dart';
 
 /// Local outbox for outgoing chat messages: offline-first send with
@@ -122,7 +123,19 @@ class OutboxService extends ChangeNotifier {
       _items.removeWhere((m) => m.localId == message.localId);
       unawaited(_persist());
       notifyListeners();
-    } catch (e) {
+    } catch (e, stack) {
+      // A failed send isn't fatal to the app (it just shows "failed, tap
+      // to retry" — see PendingMessageStatus.failed), but it's a silent
+      // failure from the backend's perspective worth having visibility
+      // into, not just something that disappears if the user never retries.
+      unawaited(ErrorLogService.instance.logError(
+        level: 'warning',
+        source: 'dart',
+        errorType: e.runtimeType.toString(),
+        message: e.toString(),
+        stackTrace: stack.toString(),
+        screenOrAction: 'sending a chat message',
+      ));
       final index = _items.indexWhere((m) => m.localId == message.localId);
       if (index == -1) return; // already resolved elsewhere
       _items[index] = _items[index].copyWith(status: PendingMessageStatus.failed);
