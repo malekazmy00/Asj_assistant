@@ -1,13 +1,16 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:speech_to_text/speech_to_text.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:record/record.dart';
 
 import '../models/file_record.dart';
 import '../models/upload_task.dart';
 import '../services/error_log_service.dart';
 import '../services/native_bridge.dart';
+import '../services/supabase_service.dart';
 import '../theme/app_theme.dart';
 import '../theme/responsive.dart';
 
@@ -47,93 +50,110 @@ class _ChatComposerState extends State<ChatComposer> {
   TextEditingController? _ownedController;
   TextEditingController get _controller => widget.controller ?? (_ownedController ??= TextEditingController());
 
-  // Voice input: on-device speech-to-text as a typing alternative — no
-  // audio ever leaves the device, no cloud round trip, no dedicated chat.
-  // Distinct from uploading a call recording (attach button): single
-  // utterance, transcribed locally, just lands in the text field like
-  // typing would. The recognized text is cumulative per listening
-  // session, so it replaces (rather than appends to) whatever was already
-  // typed before this session started — _textBeforeListening is what it's
-  // laid back on top of.
-  final SpeechToText _speech = SpeechToText();
-  bool _speechInitialized = false;
-  bool _isListening = false;
-  String _textBeforeListening = '';
+  // Voice input: tap to record a short local clip, sent to Gemini for
+  // transcription (same approach as call recordings — see
+  // supabase/functions/transcribe-voice-message), then dropped into the
+  // text field for the user to review/edit before sending, same as if
+  // they'd typed it. This replaced an on-device live-recognition
+  // approach (speech_to_text) that turned out to crash unrecoverably on
+  // more than one real device — see third_party/speech_to_text/PATCH_NOTES.md
+  // for the full history; that path is disabled, not deleted.
+  final AudioRecorder _recorder = AudioRecorder();
+  bool _isRecording = false;
+  bool _isTranscribing = false;
+  String? _recordingPath;
 
   @override
   void dispose() {
-    _speech.stop();
+    _recorder.dispose();
     _ownedController?.dispose();
     super.dispose();
   }
 
-  Future<void> _toggleListening() async {
-    if (_isListening) {
-      await _speech.stop();
-      if (mounted) setState(() => _isListening = false);
+  Future<void> _toggleRecording() async {
+    if (_isRecording) {
+      await _stopAndTranscribe();
       return;
     }
 
     // Best-effort: if the process dies right after this (native crash,
     // outside anything Dart can catch), the crash record picks this up as
     // screen_or_action — see NativeCrashReporter in MainActivity.kt.
-    unawaited(NativeBridge.instance.setLastAction('tapped mic button'));
+    unawaited(NativeBridge.instance.setLastAction('tapped mic button (record)'));
 
     try {
-      if (!_speechInitialized) {
-        _speechInitialized = await _speech.initialize(
-          onError: (e) => _showSpeechError('Voice input error: ${e.errorMsg}'),
-          onStatus: (status) {
-            if ((status == 'notListening' || status == 'done') && mounted) {
-              setState(() => _isListening = false);
-            }
-          },
-          // This app has no use for Bluetooth-headset mic input, and asking
-          // for it costs a second runtime permission (BLUETOOTH_CONNECT)
-          // that this app's manifest doesn't declare — requesting an
-          // undeclared dangerous permission is a real Android crash class
-          // on a number of OS/OEM combinations, which is exactly what was
-          // happening here. Opting out is the plugin's own documented fix
-          // for apps that don't need Bluetooth support.
-          options: [SpeechToText.androidNoBluetooth],
-        );
-      }
-      if (!_speechInitialized) {
-        _showSpeechError("Couldn't start voice input — check the microphone permission for this app.");
+      if (!await _recorder.hasPermission()) {
+        _showVoiceError("Couldn't start recording — check the microphone permission for this app.");
         return;
       }
-
-      _textBeforeListening = _controller.text;
-      setState(() => _isListening = true);
-      await _speech.listen(
-        onResult: (result) {
-          final joined = _textBeforeListening.isEmpty
-              ? result.recognizedWords
-              : '$_textBeforeListening ${result.recognizedWords}';
-          _controller.text = joined;
-          _controller.selection = TextSelection.collapsed(offset: joined.length);
-        },
-      );
+      final dir = await getTemporaryDirectory();
+      final path = '${dir.path}/voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
+      await _recorder.start(const RecordConfig(encoder: AudioEncoder.aacLc), path: path);
+      _recordingPath = path;
+      if (mounted) setState(() => _isRecording = true);
     } catch (e, stack) {
-      // Defense in depth: any PlatformException from the plugin (native
-      // errors are supposed to come back this way, not as a crash) lands
-      // here as a graceful message instead of an uncaught exception out of
-      // a button handler.
       unawaited(ErrorLogService.instance.logError(
         level: 'error',
         source: 'dart',
         errorType: e.runtimeType.toString(),
         message: e.toString(),
         stackTrace: stack.toString(),
-        screenOrAction: 'voice input (mic button)',
+        screenOrAction: 'starting voice recording',
       ));
-      _showSpeechError('Voice input error: $e');
+      _showVoiceError('Voice input error: $e');
     }
   }
 
-  void _showSpeechError(String message) {
+  Future<void> _stopAndTranscribe() async {
+    final path = await _recorder.stop();
+    if (mounted) setState(() => _isRecording = false);
+    final usablePath = path ?? _recordingPath;
+    _recordingPath = null;
+    if (usablePath == null) return;
+
+    final file = File(usablePath);
+    setState(() => _isTranscribing = true);
+    try {
+      final bytes = await file.readAsBytes();
+      if (bytes.isEmpty) {
+        _showVoiceError("Didn't catch anything — try again.");
+        return;
+      }
+      final transcript = await SupabaseService.instance.transcribeVoiceMessage(
+        bytes: bytes,
+        mimeType: 'audio/mp4', // AudioEncoder.aacLc's container (.m4a is an MP4 variant)
+      );
+      final existing = _controller.text;
+      final joined = existing.trim().isEmpty ? transcript : '$existing $transcript';
+      _controller.text = joined;
+      _controller.selection = TextSelection.collapsed(offset: joined.length);
+    } catch (e, stack) {
+      unawaited(ErrorLogService.instance.logError(
+        level: 'error',
+        source: 'dart',
+        errorType: e.runtimeType.toString(),
+        message: e.toString(),
+        stackTrace: stack.toString(),
+        screenOrAction: 'transcribing voice message',
+      ));
+      _showVoiceError('Voice input error: $e');
+    } finally {
+      if (mounted) setState(() => _isTranscribing = false);
+      // Local temp clip, never uploaded anywhere as a file — clean it up.
+      unawaited(() async {
+        try {
+          await file.delete();
+        } catch (_) {}
+      }());
+    }
+  }
+
+  void _showVoiceError(String message) {
     if (!mounted) return;
-    setState(() => _isListening = false);
+    setState(() {
+      _isRecording = false;
+      _isTranscribing = false;
+    });
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
@@ -157,9 +177,9 @@ class _ChatComposerState extends State<ChatComposer> {
   }
 
   void _submit() {
-    if (_isListening) {
-      _speech.stop();
-      setState(() => _isListening = false);
+    if (_isRecording) {
+      _recorder.cancel();
+      setState(() => _isRecording = false);
     }
     final text = _controller.text.trim();
     widget.onSend(text);
@@ -198,20 +218,33 @@ class _ChatComposerState extends State<ChatComposer> {
                     textCapitalization: TextCapitalization.sentences,
                     style: TextStyle(color: AppColors.text, fontSize: s(15)),
                     decoration: InputDecoration(
-                      hintText: _isListening ? 'Listening…' : 'Message',
+                      hintText: _isRecording
+                          ? 'Recording… tap mic to stop'
+                          : _isTranscribing
+                              ? 'Transcribing…'
+                              : 'Message',
                     ),
                     onSubmitted: (_) => _submit(),
                   ),
                 ),
-                IconButton(
-                  icon: Icon(
-                    _isListening ? Icons.mic : Icons.mic_none,
-                    color: _isListening ? AppColors.medicalBlue : AppColors.neutralIcon,
-                    size: s(24),
-                  ),
-                  onPressed: _toggleListening,
-                  tooltip: _isListening ? 'Stop voice input' : 'Voice input',
-                ),
+                _isTranscribing
+                    ? Padding(
+                        padding: EdgeInsets.symmetric(horizontal: s(12)),
+                        child: SizedBox(
+                          width: s(20),
+                          height: s(20),
+                          child: const CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      )
+                    : IconButton(
+                        icon: Icon(
+                          _isRecording ? Icons.stop_circle : Icons.mic_none,
+                          color: _isRecording ? Colors.red.shade400 : AppColors.neutralIcon,
+                          size: s(24),
+                        ),
+                        onPressed: _toggleRecording,
+                        tooltip: _isRecording ? 'Stop recording' : 'Voice input',
+                      ),
                 SizedBox(width: s(4)),
                 IconButton(
                   icon: Icon(Icons.send, color: AppColors.medicalBlue, size: s(24)),

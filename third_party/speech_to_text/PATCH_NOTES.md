@@ -1,11 +1,30 @@
-# Vendored fork of `speech_to_text` 7.4.0
+# Vendored fork of `speech_to_text` 7.4.0 — DISABLED, kept for reference
+
+**Status as of the mic-button rework: not wired into the app.** The patch
+below made on-device live recognition survive the crash it was hitting, but
+real-device testing afterward turned up further crashes on a *second*
+device in the same live-recognition path — a broader reliability problem
+with the plugin's on-device flow across devices, not just the one bug this
+patch covered. Rather than keep chasing per-device crashes in a live
+recognizer, the mic button now records a short local clip and sends it to
+Gemini for transcription (same approach as call recordings — see
+`chat_composer.dart` and `supabase/functions/transcribe-voice-message/`),
+which sidesteps on-device `SpeechRecognizer` entirely.
+
+This directory (and the patch below) is kept on disk, undeleted and
+documented, in case on-device recognition is worth revisiting later
+(offline use, lower latency, no per-utterance API cost). To re-enable: add
+`speech_to_text` back to `app/pubspec.yaml`'s `dependencies:` and re-add the
+`dependency_overrides:` block pointing here (see git history for the exact
+lines — `git log -p -- app/pubspec.yaml`).
+
+---
 
 This is a locally-patched copy of the `speech_to_text` pub.dev package
-(unmodified except as noted below), pulled in via `dependency_overrides` in
-`app/pubspec.yaml`. It exists to fix one specific, confirmed-by-real-crash-log
-bug in the upstream package — remove this override and delete this directory
-if/when a future upstream release fixes it (check the CHANGELOG for a fix to
-`startListening` error handling first).
+(unmodified except as noted below). It fixes one specific,
+confirmed-by-real-crash-log bug in the upstream package — worth checking
+the CHANGELOG for a fix to `startListening` error handling before ever
+re-enabling this fork, in case it's no longer needed.
 
 ## The bug
 

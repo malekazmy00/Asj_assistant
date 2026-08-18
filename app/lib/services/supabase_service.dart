@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
@@ -268,5 +269,23 @@ class SupabaseService {
   /// (document chunking+embedding, or queuing for the WhisperX worker).
   Future<void> triggerFileProcessing(String fileId) async {
     await _client.functions.invoke('process-file', body: {'file_id': fileId});
+  }
+
+  /// Quick, ephemeral transcription for the composer's mic button — a
+  /// short local recording sent straight to Gemini and back as plain
+  /// text, no persistence anywhere (contrast with call recordings, which
+  /// get a files row, chunking, and a dedicated chat). See
+  /// supabase/functions/transcribe-voice-message.
+  Future<String> transcribeVoiceMessage({required Uint8List bytes, required String mimeType}) async {
+    final response = await _client.functions.invoke(
+      'transcribe-voice-message',
+      body: {'audio_base64': base64Encode(bytes), 'mime_type': mimeType},
+    );
+    final data = response.data;
+    if (response.status != 200) {
+      final message = data is Map ? data['error'] as String? : null;
+      throw Exception(message ?? 'Transcription failed (${response.status})');
+    }
+    return (data as Map<String, dynamic>)['transcript'] as String;
   }
 }

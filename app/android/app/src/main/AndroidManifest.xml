@@ -1,7 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET"/>
-    <!-- On-device speech-to-text for the composer's mic button (see
-         speech_to_text package) — no audio ever leaves the device for this. -->
+    <!-- Voice input in the composer: records a short local clip (see the
+         `record` package) that's sent off for transcription — see
+         chat_composer.dart / supabase/functions/transcribe-voice-message. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <application
         android:label="medical_engineer_assistant"
@@ -44,11 +45,6 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
-        </intent>
-        <!-- Package-visibility requirement (Android 11+) for speech_to_text
-             to find the device's speech recognition service. -->
-        <intent>
-            <action android:name="android.speech.RecognitionService"/>
         </intent>
     </queries>
 </manifest>
