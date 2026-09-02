@@ -28,6 +28,7 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { corsHeaders, handleOptions, jsonResponse } from "../_shared/cors.ts";
 import { callClaude, type ClaudeContentBlock, type ClaudeMessage, type ClaudeTool } from "../_shared/anthropic.ts";
+import { callGemini } from "../_shared/gemini_chat.ts";
 import { buildSystemPrompt } from "../_shared/system_prompt.ts";
 import { embed, toPgVector } from "../_shared/embeddings.ts";
 import { extractKnowledge } from "../_shared/extract_knowledge.ts";
@@ -467,12 +468,21 @@ Deno.serve(async (req) => {
     const cacheBackgroundWork: Promise<unknown>[] = [];
     const deferredPdfExtractions: DeferredPdfExtraction[] = [];
     const systemPrompt = buildSystemPrompt(ragContext);
-    const result = await timeStep(perfEntries, "claude_call", undefined, () =>
-      callClaude({
-        systemPrompt,
-        messages: claudeMessages,
-        tools: buildTools(supabase, perfEntries, cacheBackgroundWork, deferredPdfExtractions),
-      }));
+    const tools = buildTools(supabase, perfEntries, cacheBackgroundWork, deferredPdfExtractions);
+
+    // Provider toggle (LLM_PROVIDER=claude|gemini, default claude) — for
+    // trying Gemini as an A/B comparison without ripping out the working
+    // Claude path. Both share the exact same ClaudeMessage/ClaudeTool/
+    // ClaudeResult shapes (see gemini_chat.ts), so nothing else here needs
+    // to branch. Known live constraint on the current Gemini key: no
+    // Pro-tier model access (0 quota) and Google Search grounding 429s
+    // outright — see gemini_chat.ts's header comment for what was
+    // actually verified against the live API before wiring this in.
+    const llmProvider = (Deno.env.get("LLM_PROVIDER") ?? "claude").toLowerCase();
+    const result = await timeStep(perfEntries, "llm_call", { provider: llmProvider }, () =>
+      llmProvider === "gemini"
+        ? callGemini({ systemPrompt, messages: claudeMessages, tools })
+        : callClaude({ systemPrompt, messages: claudeMessages, tools }));
 
     const finalText = result.finalText.trim() ||
       "Sorry, I didn't catch that — could you say it again?";
@@ -488,6 +498,7 @@ Deno.serve(async (req) => {
           thinking_content: result.thinkingText || null,
           replies_to_message_id: userMessage.id,
           metadata: {
+            llm_provider: llmProvider,
             web_search_used: result.webSearchUsed,
             citations: result.citations,
             tool_calls: result.toolCalls.map((t) => ({ name: t.name, input: t.input, is_error: t.isError })),
