@@ -85,28 +85,57 @@ export async function callGemini(opts: {
       });
     }
 
+    // includeThoughts (visible reasoning text) is requested only on turn
+    // 0, not every tool-selection turn. Real crash traced to this: a turn
+    // that follows a web_search + fetch_full_document round (contents
+    // already carrying tens of KB of fetched page text) hit "CPU Time
+    // exceeded" — confirmed live via function_logs, same failure mode as
+    // the earlier PDF-extraction issue (this project's per-request CPU
+    // budget is cumulative across the whole call chain). includeThoughts
+    // adds a full visible reasoning trace to EVERY turn's response, not
+    // just the final one — on a tool-heavy turn that means paying full
+    // thinking-generation + JSON-parse cost for turns whose only job is
+    // "which tool to call next," stacking on top of whatever the rest of
+    // the request already spent, right where contents is already
+    // largest. We can't know in advance which turn will be the final
+    // (non-tool-calling) one, so this trades losing the visible
+    // reasoning trace on tool-heavy turns for not crashing them — most
+    // ordinary conversational turns never call a tool at all and keep
+    // full thinking, since turn 0 already is their final turn.
+    // thoughtSignature (required for the multi-turn tool protocol — see
+    // module comment) is present regardless of includeThoughts, confirmed
+    // live, so this doesn't break the tool loop, only trims what we ask
+    // the model to narrate along the way.
     const body: Record<string, unknown> = {
       systemInstruction: { parts: [{ text: opts.systemPrompt }] },
       contents,
-      generationConfig: { thinkingConfig: { includeThoughts: true } },
+      generationConfig: { thinkingConfig: { includeThoughts: turn === 0 } },
     };
     if (tools.length > 0) body.tools = tools;
 
+    const turnStart = performance.now();
     const response = await fetch(`${GEMINI_API_BASE}/${model}:generateContent?key=${apiKey}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
+    const fetchMs = Math.round(performance.now() - turnStart);
 
     if (!response.ok) {
       const errText = await response.text();
       throw new Error(`Gemini API error ${response.status}: ${errText}`);
     }
 
+    const parseStart = performance.now();
     const data = await response.json();
+    const parseMs = Math.round(performance.now() - parseStart);
     const candidate = data.candidates?.[0];
     const parts: GeminiPart[] = candidate?.content?.parts ?? [];
     stopReason = candidate?.finishReason ?? null;
+    console.log(
+      `gemini turn ${turn}: fetch=${fetchMs}ms parse=${parseMs}ms parts=${parts.length} ` +
+        `stopReason=${stopReason} contentsSoFar=${JSON.stringify(contents).length}chars`,
+    );
 
     thinkingParts.push(...parts.filter((p) => p.thought && p.text).map((p) => p.text as string));
     textParts.push(...parts.filter((p) => p.text && !p.thought).map((p) => p.text as string));
