@@ -79,7 +79,12 @@ class OutboxService extends ChangeNotifier {
   /// Enqueues and immediately attempts to send a new message. Returns right
   /// away (fire-and-forget) — the UI reflects progress via this service's
   /// listenable state, not this future.
-  void send(String conversationId, String content, {List<String> attachmentFileIds = const []}) {
+  void send(
+    String conversationId,
+    String content, {
+    List<String> attachmentFileIds = const [],
+    bool enableSearch = true,
+  }) {
     final message = PendingMessage(
       localId: _uuid.v4(),
       conversationId: conversationId,
@@ -87,6 +92,7 @@ class OutboxService extends ChangeNotifier {
       createdAt: DateTime.now().toUtc(),
       status: PendingMessageStatus.sending,
       attachmentFileIds: attachmentFileIds,
+      enableSearch: enableSearch,
     );
     _items.add(message);
     unawaited(_persist());
@@ -116,6 +122,7 @@ class OutboxService extends ChangeNotifier {
         content: message.content,
         clientMessageId: message.localId,
         attachmentFileIds: message.attachmentFileIds,
+        enableSearch: message.enableSearch,
       );
       // Success: the confirmed message will render from the realtime
       // stream (it carries this same id — see chat/index.ts), so drop the

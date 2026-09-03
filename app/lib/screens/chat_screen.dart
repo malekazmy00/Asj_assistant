@@ -14,6 +14,7 @@ import '../models/upload_task.dart';
 import '../services/export_service.dart';
 import '../services/image_cache_service.dart';
 import '../services/outbox_service.dart';
+import '../services/search_preference_service.dart';
 import '../services/session_service.dart';
 import '../services/supabase_service.dart';
 import '../theme/app_theme.dart';
@@ -140,7 +141,12 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     final attachmentIds = readyImages.map((t) => t.fileId!).toList();
     if (text.trim().isEmpty && attachmentIds.isEmpty) return;
-    _outbox.send(conversation.id, text, attachmentFileIds: attachmentIds);
+    _outbox.send(
+      conversation.id,
+      text,
+      attachmentFileIds: attachmentIds,
+      enableSearch: SearchPreferenceService.instance.enabled,
+    );
     final sentIds = readyImages.map((t) => t.id).toSet();
     setState(() => _uploadTasks = _uploadTasks.where((t) => !sentIds.contains(t.id)).toList());
     _scrollToBottom();

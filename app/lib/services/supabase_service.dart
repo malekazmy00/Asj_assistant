@@ -131,6 +131,7 @@ class SupabaseService {
     required String content,
     String? clientMessageId,
     List<String> attachmentFileIds = const [],
+    bool enableSearch = true,
   }) async {
     final response = await _client.functions.invoke(
       'chat',
@@ -139,6 +140,7 @@ class SupabaseService {
         'content': content,
         if (clientMessageId != null) 'client_message_id': clientMessageId,
         'attachment_file_ids': attachmentFileIds,
+        'enable_search': enableSearch,
       },
     );
 

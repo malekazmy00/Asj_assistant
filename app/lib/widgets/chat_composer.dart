@@ -10,6 +10,7 @@ import '../models/file_record.dart';
 import '../models/upload_task.dart';
 import '../services/error_log_service.dart';
 import '../services/native_bridge.dart';
+import '../services/search_preference_service.dart';
 import '../services/supabase_service.dart';
 import '../theme/app_theme.dart';
 import '../theme/responsive.dart';
@@ -61,6 +62,19 @@ class _ChatComposerState extends State<ChatComposer> {
   final AudioRecorder _recorder = AudioRecorder();
   bool _isRecording = false;
   bool _isTranscribing = false;
+
+  // Live-search toggle — a global, persisted preference (see
+  // SearchPreferenceService), read once here and kept in sync locally so
+  // the icon updates immediately on tap without waiting on a rebuild from
+  // elsewhere. Captured per-message at send time (see chat_screen.dart's
+  // _handleSend), not read fresh on every retry.
+  late bool _searchEnabled = SearchPreferenceService.instance.enabled;
+
+  void _toggleSearch() {
+    final next = !_searchEnabled;
+    setState(() => _searchEnabled = next);
+    unawaited(SearchPreferenceService.instance.setEnabled(next));
+  }
   String? _recordingPath;
 
   @override
@@ -208,6 +222,15 @@ class _ChatComposerState extends State<ChatComposer> {
                   icon: Icon(Icons.attach_file, color: AppColors.neutralIcon, size: s(24)),
                   onPressed: _pickAttachment,
                   tooltip: 'Attach file',
+                ),
+                IconButton(
+                  icon: Icon(
+                    _searchEnabled ? Icons.travel_explore : Icons.explore_off,
+                    color: _searchEnabled ? AppColors.medicalBlue : AppColors.neutralIcon,
+                    size: s(24),
+                  ),
+                  onPressed: _toggleSearch,
+                  tooltip: _searchEnabled ? 'Live search: on' : 'Live search: off',
                 ),
                 Expanded(
                   child: TextField(

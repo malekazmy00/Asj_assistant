@@ -27,7 +27,7 @@
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { corsHeaders, handleOptions, jsonResponse } from "../_shared/cors.ts";
-import { callClaude, type ClaudeContentBlock, type ClaudeMessage, type ClaudeTool } from "../_shared/anthropic.ts";
+import { callClaude, type ClaudeContentBlock, type ClaudeMessage, type ClaudeTool, type WebSearchCitation } from "../_shared/anthropic.ts";
 import { callGemini } from "../_shared/gemini_chat.ts";
 import { buildSystemPrompt } from "../_shared/system_prompt.ts";
 import { embed, toPgVector } from "../_shared/embeddings.ts";
@@ -36,6 +36,7 @@ import { buildImageBlocks, fetchImageFiles } from "../_shared/attachments.ts";
 import { labelRagMatches } from "../_shared/rag_sources.ts";
 import { chunkText } from "../_shared/chunk_text.ts";
 import { extractPdfTextInBackground, fetchFullDocument } from "../_shared/fetch_document.ts";
+import { searchWeb } from "../_shared/web_search.ts";
 
 // deno-lint-ignore no-explicit-any
 declare const EdgeRuntime: any;
@@ -176,8 +177,15 @@ function buildTools(
   perfEntries: PerfEntry[],
   backgroundWork: Promise<unknown>[],
   deferredPdfExtractions: DeferredPdfExtraction[],
+  // Only present for the Gemini path — Claude keeps using Anthropic's own
+  // server-side web_search tool. See web_search.ts's header: this is a
+  // stand-in for Gemini's native Google Search grounding, which 429s
+  // outright on the current free-tier key. `citationsOut` is written to
+  // (not returned) so the caller can merge these into the same
+  // `citations` list a provider's own native search would have populated.
+  customSearch?: { citationsOut: WebSearchCitation[] },
 ): ClaudeTool[] {
-  return [
+  const tools: ClaudeTool[] = [
     {
       name: "fetch_full_document",
       description:
@@ -295,6 +303,33 @@ function buildTools(
       },
     },
   ];
+
+  if (customSearch) {
+    tools.push({
+      name: "web_search",
+      description:
+        "Search the web live for a topic. Returns a short list of results (title, url, snippet). Use this to find current information or to discover a URL worth reading in full via fetch_full_document — don't answer compatibility/safety-critical questions from the snippet alone.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "The search query." },
+        },
+        required: ["query"],
+      },
+      handler: async (input) => {
+        const results = await timeStep(
+          perfEntries, "web_search", { query: input.query }, () => searchWeb(input.query),
+        );
+        for (const r of results) {
+          customSearch.citationsOut.push({ title: r.title, url: r.url });
+        }
+        if (results.length === 0) return "No results found.";
+        return results.map((r) => `- ${r.title} (${r.url}): ${r.snippet}`).join("\n");
+      },
+    });
+  }
+
+  return tools;
 }
 
 Deno.serve(async (req) => {
@@ -305,9 +340,13 @@ Deno.serve(async (req) => {
   const requestStart = performance.now();
 
   try {
-    const { conversation_id, content, client_message_id, attachment_file_ids } = await req.json();
+    const { conversation_id, content, client_message_id, attachment_file_ids, enable_search } = await req.json();
     const attachmentIds: string[] = Array.isArray(attachment_file_ids) ? attachment_file_ids : [];
     const text: string = typeof content === "string" ? content : "";
+    // Defaults on — the Flutter toggle sends this explicitly either way,
+    // but treat a missing/malformed value as "search enabled" rather than
+    // silently going quiet, since that's the existing (pre-toggle) behavior.
+    const enableSearch: boolean = enable_search !== false;
 
     if (!conversation_id || (!text.trim() && attachmentIds.length === 0)) {
       return jsonResponse(
@@ -468,7 +507,6 @@ Deno.serve(async (req) => {
     const cacheBackgroundWork: Promise<unknown>[] = [];
     const deferredPdfExtractions: DeferredPdfExtraction[] = [];
     const systemPrompt = buildSystemPrompt(ragContext);
-    const tools = buildTools(supabase, perfEntries, cacheBackgroundWork, deferredPdfExtractions);
 
     // Provider toggle (LLM_PROVIDER=claude|gemini, default claude) — for
     // trying Gemini as an A/B comparison without ripping out the working
@@ -479,13 +517,26 @@ Deno.serve(async (req) => {
     // outright — see gemini_chat.ts's header comment for what was
     // actually verified against the live API before wiring this in.
     const llmProvider = (Deno.env.get("LLM_PROVIDER") ?? "claude").toLowerCase();
+
+    // Custom web_search tool is only offered to Gemini (Claude keeps its
+    // own native search) and only when the client's live-search toggle
+    // (see chat_composer.dart) is on. Its results feed citationsOut,
+    // merged into the reply's citations below alongside whatever the
+    // provider's own native search/grounding found.
+    const customSearchCitations: WebSearchCitation[] = [];
+    const tools = buildTools(
+      supabase, perfEntries, cacheBackgroundWork, deferredPdfExtractions,
+      llmProvider === "gemini" && enableSearch ? { citationsOut: customSearchCitations } : undefined,
+    );
+
     const result = await timeStep(perfEntries, "llm_call", { provider: llmProvider }, () =>
       llmProvider === "gemini"
         ? callGemini({ systemPrompt, messages: claudeMessages, tools })
-        : callClaude({ systemPrompt, messages: claudeMessages, tools }));
+        : callClaude({ systemPrompt, messages: claudeMessages, tools, enableWebSearch: enableSearch }));
 
     const finalText = result.finalText.trim() ||
       "Sorry, I didn't catch that — could you say it again?";
+    const allCitations = [...result.citations, ...customSearchCitations];
 
     // 4. Persist the agent's reply, thinking stored separately.
     const agentMessage = await timeStep(perfEntries, "agent_message_insert", undefined, async () => {
@@ -499,8 +550,9 @@ Deno.serve(async (req) => {
           replies_to_message_id: userMessage.id,
           metadata: {
             llm_provider: llmProvider,
-            web_search_used: result.webSearchUsed,
-            citations: result.citations,
+            search_enabled: enableSearch,
+            web_search_used: result.webSearchUsed || customSearchCitations.length > 0,
+            citations: allCitations,
             tool_calls: result.toolCalls.map((t) => ({ name: t.name, input: t.input, is_error: t.isError })),
           },
         })

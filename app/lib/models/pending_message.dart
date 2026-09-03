@@ -13,6 +13,11 @@ class PendingMessage {
   final DateTime createdAt;
   final PendingMessageStatus status;
   final List<String> attachmentFileIds;
+  // Captured at send time (from the composer's search toggle — see
+  // SearchPreferenceService) rather than read fresh on every retry, so a
+  // retry always resends with the same search setting the user actually
+  // saw when they hit send, not whatever the toggle happens to be later.
+  final bool enableSearch;
 
   PendingMessage({
     required this.localId,
@@ -21,6 +26,7 @@ class PendingMessage {
     required this.createdAt,
     required this.status,
     this.attachmentFileIds = const [],
+    this.enableSearch = true,
   });
 
   PendingMessage copyWith({PendingMessageStatus? status}) {
@@ -31,6 +37,7 @@ class PendingMessage {
       createdAt: createdAt,
       status: status ?? this.status,
       attachmentFileIds: attachmentFileIds,
+      enableSearch: enableSearch,
     );
   }
 
@@ -41,6 +48,7 @@ class PendingMessage {
         'createdAt': createdAt.toIso8601String(),
         'status': status.name,
         'attachmentFileIds': attachmentFileIds,
+        'enableSearch': enableSearch,
       };
 
   factory PendingMessage.fromJson(Map<String, dynamic> json) {
@@ -52,6 +60,9 @@ class PendingMessage {
       status: PendingMessageStatus.values.byName(json['status'] as String? ?? 'failed'),
       attachmentFileIds:
           (json['attachmentFileIds'] as List?)?.whereType<String>().toList() ?? const [],
+      // Missing on an older queued message (from before this field
+      // existed) — default true, matching the app's prior always-on behavior.
+      enableSearch: json['enableSearch'] as bool? ?? true,
     );
   }
 }

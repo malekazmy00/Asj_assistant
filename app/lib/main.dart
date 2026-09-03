@@ -7,6 +7,7 @@ import 'screens/chat_screen.dart';
 import 'screens/library_screen.dart';
 import 'services/error_log_service.dart';
 import 'services/outbox_service.dart';
+import 'services/search_preference_service.dart';
 import 'services/supabase_service.dart';
 import 'theme/app_theme.dart';
 
@@ -55,6 +56,7 @@ Future<void> main() async {
       // App-wide, not screen-scoped: pending sends keep retrying on
       // reconnect even while the user is on the Library tab.
       await OutboxService.instance.init();
+      await SearchPreferenceService.instance.init();
       // Uploads (and clears) any crash file a native handler wrote during
       // a previous run that ended in a crash the Dart side never saw —
       // see MainActivity.kt / ErrorLogService.uploadPendingNativeCrashes.
